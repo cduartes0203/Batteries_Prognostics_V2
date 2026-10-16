@@ -1,7 +1,7 @@
 import numpy as np
 import math
-from Testing.eRNN_GD_R2 import *
-from Functions.DataCloud_V3 import *
+from Testing.eRNN_GD_R3 import *
+from Functions.DataCloud_V4 import *
 
 class AutoCloud:
 	def __init__(self,m,nI=1,nR=[1],nO=1,ηS=[0.1,0.1,0.1],
@@ -81,6 +81,10 @@ class AutoCloud:
 		self.rulP2 = np.array([])
 		self.rulU = np.array([])
 		self.rulR = np.array([])
+		# 1 quando a trajetória (inferior, pontual, superior) não atinge o EoL e a RUL é truncada em lim
+		self.rulCapL = np.array([], dtype=int)
+		self.rulCapP = np.array([], dtype=int)
+		self.rulCapU = np.array([], dtype=int)
 		self.ref = ref
 		self.rulR2 = np.array([])
 		self.rulR_Train = np.array([])
@@ -140,8 +144,8 @@ class AutoCloud:
 
 		hiR,hiL,hiU,hiP = self.hiR,self.hiL,self.hiU,self.hiP
 
-		#Range = np.max(hiR) - np.min(hiR)
-		Range = 1 - 0
+		Range = np.max(hiR) - np.min(hiR)
+		#Range = 1 - 0
 		cov, sp = np.array([]), np.array([])
 		
 		for hR,hL,hU in zip(hiR,hiL,hiU):
@@ -410,8 +414,14 @@ class AutoCloud:
 		predict = True
 		Ruls = [0 for i in range(3)]
 		CheckRuls = [True for i in range(3)]
+		Capped = [0 for i in range(3)]
 		PredVals = np.zeros(3)
 		cont = True
+
+		# Trajetórias pontual e intervalares partem do mesmo estado atual h(t) em todos os grânulos
+		# (garante yL <= yP <= yU mesmo que outra chamada tenha avançado hP2 entre os passos)
+		for cloud in self.c:
+			cloud.rnn.Restore()
 
 		while predict:
 			if self.wtaG==False and self.wtaP==True:
@@ -440,24 +450,28 @@ class AutoCloud:
 				if Ruls[j] > lim:
 					CheckRuls[j] = False
 					Ruls[j] = lim
+					Capped[j] = 1
 
 			for j,_ in enumerate(CheckRuls):
 				if PredVals[j] <= self.eol:
 					CheckRuls[j] = False
-			
+
 			if sum(CheckRuls)==0:
 				break
-					
+
 		for cloud in self.c:
 			cloud.rnn.Restore()
 
-		if Ruls[2] < Ruls[1]:
-			Ruls[2] = Ruls[1] 
+		# Sem ajuste de Ruls[2]: com aritmética intervalar exata (eRNN_GD_R3) yL <= yP <= yU em todo o horizonte,
+		# logo rulL <= rulP <= rulU por construção (HI decrescente: a trajetória inferior atinge o EoL primeiro)
 		self.t = np.append(self.t,self.k - 2)
 		self.rulR = np.append(self.rulR,self.ref - self.k)
 		self.rulP = np.append(self.rulP,Ruls[1])
 		self.rulL = np.append(self.rulL,Ruls[0])
 		self.rulU = np.append(self.rulU,Ruls[2])
+		self.rulCapL = np.append(self.rulCapL,Capped[0])
+		self.rulCapP = np.append(self.rulCapP,Capped[1])
+		self.rulCapU = np.append(self.rulCapU,Capped[2])
 
 		for i,cloud in enumerate(self.c):
 			if self.alfa[i] > 0:
