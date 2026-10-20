@@ -11,9 +11,17 @@ def XavierUniform(shape, sd):
     return rng.uniform(-limit, limit, size=shape)
 
 
-def WeightInterval(W, ep):
+'''def WeightInterval(W, ep):
     # Grânulo do peso (protocolo 2 de Al-Hmouz et al., 2024): [min(w/(1+ε), w(1+ε)), max(w/(1+ε), w(1+ε))]
     a, b = (1 + ep) * W, W / (1 + ep)
+    return np.minimum(a, b), np.maximum(a, b)'''
+
+def WeightInterval(W, ep):
+    # Grânulo do peso (protocolo 1 de Al-Hmouz et al., 2024, eq. 4):
+    # [min(w(1-ε), w(1+ε)), max(w(1-ε), w(1+ε))], com ε ∈ [0, 1]
+    if not 0 <= ep <= 1:
+        raise ValueError('No protocolo 1, ε deve estar em [0, 1].')
+    a, b = (1 - ep) * W, (1 + ep) * W
     return np.minimum(a, b), np.maximum(a, b)
 
 
