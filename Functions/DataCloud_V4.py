@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from Testing.eRNN_GD_R3 import *
+from Testing.eRNN_R3 import *
 
 class DataCloud:
 	N=0

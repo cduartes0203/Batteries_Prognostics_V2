@@ -1,13 +1,29 @@
 import numpy as np
 import math
-from Testing.eRNN_GD_R3 import *
+from Testing.eRNN_R3 import *
 from Functions.DataCloud_V4 import *
+from Functions.RLS import *
 
 class AutoCloud:
+	'''
+	intr: como o intervalo de predição (HI e RUL) é construído em RUL_Prediction(mode='interval')
+		'error'  : protocolo 3 de Al-Hmouz et al. (2024) com análise intervalar de Wang et al. (2024).
+		           A cada passo t da previsão recursiva:
+		             1) a janela de entrada intervalar (valores observados = intervalos degenerados; valores
+		                previstos = intervalos) é propagada pela rede com pesos NUMÉRICOS (Lema 1 / Teorema 1:
+		                W+ x_inf - W- x_sup <= W x <= W+ x_sup - W- x_inf), incluindo o estado recorrente intervalar;
+		             2) a margem do próprio passo, M = rho * e(x_pred), com e(.) o modelo logarítmico de erro (hiRLS,
+		                treinado com os erros de um passo), é subtraída/somada aos limites propagados;
+		           rho multiplica o erro estimado (adimensional; ex.: rho = 1 -> ± 1 erro estimado).
+		'weights': rho como granularidade dos pesos (protocolo 1/2 em eRNN_R3.WeightInterval), sem margem de erro.
+	'''
 	def __init__(self,m,nI=1,nR=[1],nO=1,ηS=[0.1,0.1,0.1],
 			  tau=1,eol=0,ref=0,mode='past',act='tanh',st=0,end=0,
-			  rho=0.003,wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0):
-		
+			  rho=0.003,wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0,intr='error'):
+
+		if intr not in ('error', 'weights'):
+			raise ValueError("intr deve ser 'error' ou 'weights'.")
+		self.intr = intr
 		self.rho = rho
 		self.vSum = 0
 		self.st = st
@@ -114,6 +130,18 @@ class AutoCloud:
 		self.wape_HI2 = 0
 		self.eHI_Sum2 = 0
 		self.eHI_Diff2 = 0
+
+		self.hiRLS = RLS_LogarithmicRegressor(0.999,1e5)
+		self.rulRLS = RLS_LogarithmicRegressor(0.999,1e5)
+
+		self.ehiR = 0
+		self.ehiP = 0
+		self.erulR = 0
+		self.erulP = 0
+		self.ehiR_hist = np.array([])
+		self.ehiP_hist = np.array([])
+		self.erulR_hist = np.array([])
+		self.erulP_hist = np.array([])
 
 		self.εP = []
 		self.εR = []
@@ -286,10 +314,34 @@ class AutoCloud:
 			vec = np.append(vec, cloud.v)
 		self.vSum = np.sum(vec)
 
+	def ErrorModelHI(self, y):
+		# Erro absoluto estimado de uma predição de HI de valor y (modelo logarítmico RLS treinado com erros de um passo)
+		return abs(self.hiRLS.predict(max(abs(y), 1e-9)))
+
+	def ErrorPrediction(self):
+
+		# Regressores positivos (o modelo logarítmico exige x > 0)
+		xhi, xrul = max(abs(self.hiP[-1]), 1e-9), max(abs(self.rulP[-1]), 1e-9)
+		ehiP = np.abs(self.hiRLS.predict(xhi))
+		erulP = np.abs(self.rulRLS.predict(xrul))
+		ehiR = np.abs(self.hiP[-1]-self.hiR[-1])
+		erulR = np.abs(self.rulP[-1]-self.rulR[-1])
+
+		self.hiRLS.update(xhi, ehiR)
+		self.rulRLS.update(xrul, erulR)
+
+		self.ehiR_hist = np.append(self.ehiR_hist,ehiR)
+		self.ehiP_hist = np.append(self.ehiP_hist,ehiP)
+		self.erulR_hist = np.append(self.erulR_hist,erulR)
+		self.erulP_hist = np.append(self.erulP_hist,erulP)
+
 	def Adapt(self,y,z, show=False):
 		n = self.c[0].rnn.n
 		self.HI = np.append(self.HI,z[n])
 		self.hiR = np.append(self.hiR,z[n])
+
+		self.ErrorPrediction()
+
 		for i,cloud in enumerate(self.c):
 			if self.alfa[i] > 0:
 				cloud.rnn.fit(y,z)
@@ -428,9 +480,18 @@ class AutoCloud:
 				self.alfa = np.where(self.alfa<np.max(self.alfa),0,self.alfa)
 			ws = self.alfa/np.sum(self.alfa)
 
-			Pred = [w*c.rnn.PredictIntr(xP,xL,xU,self.rho,False) for w,c in zip(ws,self.c)]
-
-			PredVals = sum(Pred)
+			if self.intr == 'error':
+				# 1) Propagação da janela intervalar com pesos numéricos (ep = 0: Lema 1, Wang et al.)
+				Pred = [w*c.rnn.PredictIntr(xP,xL,xU,0.0,False) for w,c in zip(ws,self.c)]
+				yL,yP,yU = sum(Pred)
+				# Limites propagados contêm yP por construção; min/max apenas remove resíduos de arredondamento
+				yL, yU = min(yL, yP), max(yU, yP)
+				# 2) Margem de erro do próprio passo (protocolo 3, eq. 10): M = rho * e(x_pred)
+				M = self.rho * self.ErrorModelHI(yP)
+				PredVals = np.array([yL - M, yP, yU + M])
+			else:
+				Pred = [w*c.rnn.PredictIntr(xP,xL,xU,self.rho,False) for w,c in zip(ws,self.c)]
+				PredVals = sum(Pred)
 			yL,yP,yU = PredVals
 
 			if cont:
