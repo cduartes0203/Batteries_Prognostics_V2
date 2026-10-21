@@ -116,17 +116,17 @@ class AutoCloud:
 		self.eHI_Sum2 = 0
 		self.eHI_Diff2 = 0
 
-		self.hiRLS = RLS_LogarithmicRegressor(0.9,1e7)
-		self.rulRLS = RLS_LogarithmicRegressor(0.9,1e7)
+		#self.ehiR = 0
+		#self.ehiP = 0
+		#self.ehiR_hist = np.array([])
+		#self.ehiP_hist = np.array([])
+		#self.hiRLS = RLS_LogarithmicRegressor(0.9,1e7)
 
-		self.ehiR = 0
-		self.ehiP = 0
 		self.erulR = 0
 		self.erulP = 0
-		self.ehiR_hist = np.array([])
-		self.ehiP_hist = np.array([])
 		self.erulR_hist = np.array([])
 		self.erulP_hist = np.array([])
+		self.rulRLS = RLS_LogarithmicRegressor(0.9,1e6)
 
 		self.εP = []
 		self.εR = []
@@ -152,27 +152,6 @@ class AutoCloud:
 		self.xMax_gm = None
 		self.Rmax_gm = 0
 		self.Vmax_gm = 0
-
-	def HI_Granularity(self):
-
-		hiR,hiL,hiU,hiP = self.hiR,self.hiL,self.hiU,self.hiP
-
-		Range = np.max(hiR) - np.min(hiR)
-		#Range = 1 - 0
-		cov, sp = np.array([]), np.array([])
-		
-		for hR,hL,hU in zip(hiR,hiL,hiU):
-			if hR>= hL and hR<= hU:
-				cov = np.append(cov,1)
-			else:
-				cov = np.append(cov,0)
-			spVal = max(0, 1 - (hU-hL)/Range )
-			sp = np.append(sp, spVal)
-
-		self.sp = sp.mean()
-		self.cov = cov.mean()
-		self.Vpaper = cov.mean() * sp.mean()
-		self.Vused = (cov * sp).mean() 
 	
 	def RUL_Granularity(self):
 		rulR,rulL,rulP,rulU = self.rulR,self.rulL,self.rulP,self.rulU
@@ -189,6 +168,8 @@ class AutoCloud:
 
 		self.sp = sp.mean()
 		self.cov = cov.mean()
+		self.sp_hist = sp
+		self.cov_hist = cov
 		self.Vpaper = cov.mean() * sp.mean()
 		self.Vused = (cov * sp).mean() 
 
@@ -197,7 +178,7 @@ class AutoCloud:
 		self.eRul_Diff = np.abs(yR*t - yP*t) + self.eRul_Diff
 		self.eRul_Sum = np.abs(yR*t) + self.eRul_Sum
 		self.wape_RUL = self.eRul_Diff/self.eRul_Sum
-
+		
 		if self.store:
 			self.wape_RUL_hist = np.append(self.wape_RUL_hist,self.wape_RUL)
 
@@ -211,7 +192,7 @@ class AutoCloud:
 			self.wape_HI_hist = np.append(self.wape_HI_hist,self.wape_HI)
 
 	def teda_WAPE(self):
-		self.WAPE_RUL()
+		#self.WAPE_RUL()
 		self.WAPE_HI()
 
 	def PredictWindow(self,y,show=False):
@@ -299,27 +280,21 @@ class AutoCloud:
 			vec = np.append(vec, cloud.v)
 		self.vSum = np.sum(vec)
 
-	def ErrorPrediction(self):
-
-		ehiP = np.abs(self.hiRLS.predict(np.abs(self.hiP[-1])))
+	'''def RUL_ErrorPrediction(self):
 		erulP = np.abs(self.rulRLS.predict(np.abs(self.rulP[-1])))
-		ehiR = np.abs(self.hiP[-1]-self.hiR[-1])
 		erulR = np.abs(self.rulP[-1]-self.rulR[-1])
-
-		self.hiRLS.update(np.abs(self.hiP[-1]), ehiR)
-		self.rulRLS.update(np.abs(self.rulP[-1]), erulR)
-
-		self.ehiR_hist = np.append(self.ehiR_hist,ehiR)
-		self.ehiP_hist = np.append(self.ehiP_hist,ehiP)
+		self.erulP = erulP
+		self.erulR = erulR
 		self.erulR_hist = np.append(self.erulR_hist,erulR)
 		self.erulP_hist = np.append(self.erulP_hist,erulP)
+		self.rulRLS.update(np.abs(self.rulP[-1]), np.abs(self.erulR_hist[-1]))'''
 
 	def Adapt(self,y,z, show=False):
 		n = self.c[0].rnn.n
 		self.HI = np.append(self.HI,z[n])
 		self.hiR = np.append(self.hiR,z[n])
 
-		self.ErrorPrediction()
+
 
 		for i,cloud in enumerate(self.c):
 			if self.alfa[i] > 0:
@@ -357,22 +332,8 @@ class AutoCloud:
 				params.append((item1 + item2) / 2.0)
 
 		c3.rnn.ReceiveParameters(params)
-		
-	
-	def PredictTS(self,X):
-		xP = X.copy()
-		
-		pP = self.Predict(xP)
-		self.HIp = np.append(self.HIp,pP)
 
-		self.rulR = np.append(self.rulR,0)
-		self.rulP = np.append(self.rulP,0)
-		self.rulL = np.append(self.rulL,0)
-		self.rulU = np.append(self.rulU,0)
 
-		for cloud in self.c:
-			cloud.rnn.Restore()
-		return
 
 	def RULSingle(self,X,lim=None,show=False):
 			if lim==None:
@@ -426,17 +387,36 @@ class AutoCloud:
 			self.t = np.append(self.t,self.k - 2)
 			self.rulR = np.append(self.rulR,self.ref - self.k)
 			self.rulP = np.append(self.rulP,Ruls[1])
-			self.rulL = np.append(self.rulL,Ruls[0])
-			self.rulU = np.append(self.rulU,Ruls[2])
-	
+
+			self.WAPE_RUL()
+
+			self.RUL_ErrorPrediction()
+
+			rulL = Ruls[0] - self.erulP * self.rho
+			
+			rulU = Ruls[2] + self.erulP * self.rho
+
 			for i,cloud in enumerate(self.c):
 				if self.alfa[i] > 0:
 					cloud.t2.append(self.k-2)
 					cloud.rulR = np.append(cloud.rulR,self.ref - self.k)
 					cloud.rulP = np.append(cloud.rulP,Ruls[1])
-					cloud.rulL.append(Ruls[0])
+					cloud.rulL.append(rulL)
 					cloud.rulM.append(Ruls[1])
-					cloud.rulU.append(Ruls[2])
+					cloud.rulU.append(rulU)			
+			
+			self.rulL = np.append(self.rulL,rulL)
+			self.rulU = np.append(self.rulU,rulU)
+
+
+	def RUL_ErrorPrediction(self):
+		erulP = np.abs(self.rulRLS.predict(np.abs(self.rulP[-1])))
+		erulR = self.wape_RUL
+		self.erulP = erulP
+		self.erulR = erulR
+		self.erulR_hist = np.append(self.erulR_hist,erulR)
+		self.erulP_hist = np.append(self.erulP_hist,erulP)
+		self.rulRLS.update(np.abs(self.rulP[-1]), np.abs(self.erulR_hist[-1]))
 	
 	def RULInterv(self,X,lim=None,show=False):
 		if lim==None:
