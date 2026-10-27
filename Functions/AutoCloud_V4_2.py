@@ -1,7 +1,9 @@
 import numpy as np
 import math
 from Testing.eRNN_R3 import *
-from Functions.DataCloud_V4 import *
+from OLD.DataCloud_V4 import *
+from Functions.RLS import *
+
 
 class AutoCloud:
 	'''
@@ -152,6 +154,8 @@ class AutoCloud:
 		self.xR = 0
 		self.xF = 0
 		self.Dmax = 0
+
+		self.rls = RLS_LogarithmicRegressor(0.9,1e6)
 
 		self.sp = 0
 		self.cov = 0

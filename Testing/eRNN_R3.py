@@ -1,6 +1,7 @@
 import copy
 import numpy as np
 from Functions.Utils_RTLO import Activation, dActivation
+import copy
 
 
 def XavierUniform(shape, sd):
