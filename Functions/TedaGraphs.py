@@ -1809,7 +1809,7 @@ def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=N
     
     plt.show()
 
-def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=550,
+def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
                    mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None):

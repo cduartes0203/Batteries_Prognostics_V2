@@ -26,7 +26,9 @@ class AutoCloud:
 			  tau=1,eol=0,ref=0,mode='past',act='tanh',st=0,end=0,
 			  wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0,
 			  rho=1e-3,lam=1.0,intr_state='reset',
-			  rho_dyn=True,rho_eta=0.2,rho_T=0.3,rho_beta=0.0,rho_min=1e-3,rho_max=10.0,sp_range=1.0):
+			  rho_dyn=True,rho_eta=0.2,rho_T=0.3,rho_beta=0.0,rho_min=1e-3,rho_max=10.0,sp_range=1.0,
+			  nf_rls = 3, ff_rls=1, dt_rls = 1e3
+			  ):
 
 		# rho: múltiplo do erro estimado do HI no intervalo de RULInterv2 (protocolo 3); valor inicial se rho_dyn=True
 		self.rho = rho
@@ -170,13 +172,15 @@ class AutoCloud:
 		self.xF = 0
 		self.Dmax = 0
 
-		self.rls = RLS_LogarithmicRegressor(0.9,1e6)
+		self.rls = RLS_LogarithmicRegressor(ff=ff_rls,dt=dt_rls)
+		#self.rls = RLS(nf=nf_rls,ff=ff_rls,dt=dt_rls)
 
 		self.sp = 0
 		self.cov = 0
+		self.V = 0
 		self.sp_hist = np.array([])
 		self.cov_hist = np.array([])
-		self.V = 0
+		self.V_hist = np.array([])
 
 		self.dim = None
 		self.gm = None
@@ -190,11 +194,23 @@ class AutoCloud:
 	def UpdateRLS(self,mode='RUL'):
 
 		if mode == 'RUL':
-			x = self.rulP[-1]
+			#x = self.rulP[-1]
+			#eP = self.rls.predict(x)
+			#eR = np.abs(self.rulP[-1]-self.rulR[-1])
+			#self.rls.update(x,eR)
+			#self.RUL_Granularity()
+
+			x = self.hiP[-1]
+			if x < 0:
+				x = 1e-9
 			eP = self.rls.predict(x)
-			eR = np.abs(self.rulP[-1]-self.rulR[-1])
+			eR = np.abs(self.hiP[-1]-self.hiR[-1])
 			self.rls.update(x,eR)
 			self.RUL_Granularity()
+			# Valor real do HI conhecido: atualiza o rho do próximo passo
+			if self.rho_dyn and self.ehat_last is not None:
+				self.UpdateRhoGrad(eR, self.ehat_last)
+				self.ehat_last = None
 
 		if mode == 'HI':
 			x = self.hiP[-1]
@@ -232,7 +248,7 @@ class AutoCloud:
 
 		#Range = np.max(hiR) - np.min(hiR)
 		Range = 1 - 0
-		cov, sp = np.array([]), np.array([])
+		cov, sp, Vsum = np.array([]), np.array([]), 0
 		
 		for hR,hL,hU in zip(hiR,hiL,hiU):
 			if hR>= hL and hR<= hU:
@@ -241,16 +257,19 @@ class AutoCloud:
 				cov = np.append(cov,0)
 			spVal = max(0, 1 - (hU-hL)/Range )
 			sp = np.append(sp, spVal)
-
+			Vsum +=  cov[-1]*sp[-1]
 		self.sp = sp.mean()
 		self.cov = cov.mean()
+		self.sp_hist = sp
+		self.cov_hist = cov
 		#self.V = cov.mean() * sp.mean()
 		self.V = (cov * sp).mean() 
+		self.Vsum = Vsum
 
 	def RUL_Granularity(self):
 		rulR,rulL,rulP,rulU = self.rulR,self.rulL,self.rulP,self.rulU
 		Range = np.max(rulR) - np.min(rulR)
-		cov, sp = np.array([]), np.array([])
+		cov, sp, Vsum = np.array([]), np.array([]), 0
 
 		for rR,rL,rU in zip(rulR,rulL,rulU):
 			if rR>= rL and rR<= rU:
@@ -259,11 +278,15 @@ class AutoCloud:
 				cov = np.append(cov,0)
 			spVal = max(0, 1 - (rU-rL)/Range )
 			sp = np.append(sp, spVal)
+			Vsum +=  cov[-1]*sp[-1]
 
-		self.sp = sp.mean()
-		self.cov = cov.mean()
-		#self.V = cov.mean() * sp.mean()
-		self.V = (cov * sp).mean() 
+			self.sp = sp.mean()
+			self.cov = cov.mean()
+			self.sp_hist = sp
+			self.cov_hist = cov
+			#self.V = cov.mean() * sp.mean()
+			self.V = (cov * sp).mean() 
+			self.Vsum = Vsum
 
 	def UpdateRho(self, truth):
 		# Atualização online do rho: acumula cov/sp de cada candidato com o valor real e escolhe o melhor V
