@@ -1812,7 +1812,7 @@ def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=N
 def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=550,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
-                   mergeID=False, m1=4, m2=3, m3=3, ncol=4):
+                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None):
 
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
@@ -1860,203 +1860,220 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=550,
     if len(merged_track) == 0: merged_track = 'Merged Granules: None'
     else: merged_track = 'Merged Granules: ' + merged_track
 
-    # --- Grid: 2*ftrs linhas x 4 colunas ---
+    # Colunas visíveis (1: 3D, 2: IED temporal, 3: RUL/HI, 4: WAPE)
+    ratios = {1: 1, 2: 0.7, 3: 1, 4: 0.5}
+    show = [c for c in ratios if c not in (HideCol or [])]
+    if len(show) == 0: return
+    gc = {c: k+1 for k, c in enumerate(show)}
+    w = int(w * sum(ratios[c] for c in show) / sum(ratios.values()))
+
+    # --- Grid: 2*ftrs linhas x colunas visíveis ---
     # Col 1: 3D (todas as linhas) | Col 2: ftrs subplots (2 linhas cada)
     # Col 3: RUL / HI (ftrs linhas cada) | Col 4: WAPE-RUL / WAPE-HI (ftrs linhas cada)
     rows = 2*ftrs
-    specs = []
-    for r in range(rows):
-        specs.append([{"type": "scene", "rowspan": rows} if r == 0 else None,
-                      {"type": "xy", "rowspan": 2} if r % 2 == 0 else None,
-                      {"type": "xy", "rowspan": ftrs} if r % ftrs == 0 else None,
-                      {"type": "xy", "rowspan": ftrs} if r % ftrs == 0 else None])
+    cell = {1: lambda r: {"type": "scene", "rowspan": rows} if r == 0 else None,
+            2: lambda r: {"type": "xy", "rowspan": 2} if r % 2 == 0 else None,
+            3: lambda r: {"type": "xy", "rowspan": ftrs} if r % ftrs == 0 else None,
+            4: lambda r: {"type": "xy", "rowspan": ftrs} if r % ftrs == 0 else None}
+    specs = [[cell[c](r) for c in show] for r in range(rows)]
+    titles = {1: title[0], 2: title[1], 3: title[-1], 4: title_wape}
 
-    fig = make_subplots(rows=rows, cols=4, specs=specs,
-                        column_widths=[1, 0.7, 1, 0.5],
-                        subplot_titles=(title[0], title[1], title[-1], title_wape),
+    fig = make_subplots(rows=rows, cols=len(show), specs=specs,
+                        column_widths=[ratios[c] for c in show],
+                        subplot_titles=[titles[c] for c in show],
                         horizontal_spacing=0.05, vertical_spacing=0.03)
-
-    pRUL, pHI = dict(row=1, col=3), dict(row=ftrs+1, col=3)
-    pWR, pWH = dict(row=1, col=4), dict(row=ftrs+1, col=4)
 
     # --- Coluna 1: Granulação espacial 3D ---
     def wireframe(a):
         lines = [a[k, :] for k in range(a.shape[0])] + [a[:, k] for k in range(a.shape[1])]
         return [v for line in lines for v in list(line) + [None]]
 
-    for i, cloud in enumerate(teda.c):
-        isGM = cloud.ID == 'GM'
-        color = black if isGM else colors[i]
-        name = 'GM' if isGM else f'G{cloud.ID}'
-        group = dict(legendgroup=name, legend='legend', showlegend=False)
-        mx, my, mz = np.asarray(cloud.mean)[-3:]
-        r = radii[i]
+    if 1 in show:
+        p3D = dict(row=1, col=gc[1])
+        for i, cloud in enumerate(teda.c):
+            isGM = cloud.ID == 'GM'
+            color = black if isGM else colors[i]
+            name = 'GM' if isGM else f'G{cloud.ID}'
+            group = dict(legendgroup=name, legend='legend', showlegend=False)
+            mx, my, mz = np.asarray(cloud.mean)[-3:]
+            r = radii[i]
 
-        # Entrada da legenda do grânulo (clique liga/desliga o grânulo inteiro)
+            # Entrada da legenda do grânulo (clique liga/desliga o grânulo inteiro)
+            fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers',
+                                       marker=dict(size=m2*2, color=color), name=name,
+                                       legendgroup=name, legend='legend'), **p3D)
+
+            if not isGM:
+                pts = np.array(cloud.x)[:, -3:]
+                fig.add_trace(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], mode='markers',
+                                           marker=dict(size=m1, color=color, opacity=0.5),
+                                           name=name, **group), **p3D)
+
+            # Eixos do grânulo (segmentos de comprimento 2R passando pelo centro)
+            fig.add_trace(go.Scatter3d(x=[mx, mx, None, mx, mx, None, mx-r, mx+r],
+                                       y=[my, my, None, my-r, my+r, None, my, my],
+                                       z=[mz-r, mz+r, None, mz, mz, None, mz, mz],
+                                       mode='lines', line=dict(color=color, width=1), opacity=0.5,
+                                       hoverinfo='skip', **group), **p3D)
+
+            fig.add_trace(go.Scatter3d(x=[mx], y=[my], z=[mz], mode='markers',
+                                       marker=dict(symbol='cross', size=m1*2, color=color),
+                                       name=f'{name} ({glabel})', **group), **p3D)
+
+            # Hiperesfera: superfície + wireframe
+            u = np.linspace(0, 2 * np.pi, 20)
+            v = np.linspace(0, np.pi, 20)
+            sx = r * np.outer(np.cos(u), np.sin(v)) + mx
+            sy = r * np.outer(np.sin(u), np.sin(v)) + my
+            sz = r * np.outer(np.ones(np.size(u)), np.cos(v)) + mz
+            fig.add_trace(go.Surface(x=sx, y=sy, z=sz, colorscale=[[0, color], [1, color]],
+                                     opacity=0.05, showscale=False, hoverinfo='skip', **group),
+                          **p3D)
+            fig.add_trace(go.Scatter3d(x=wireframe(sx), y=wireframe(sy), z=wireframe(sz), mode='lines',
+                                       line=dict(color=color, width=1), opacity=0.3,
+                                       hoverinfo='skip', **group), **p3D)
+
         fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers',
-                                   marker=dict(size=m2*2, color=color), name=name,
-                                   legendgroup=name, legend='legend'), row=1, col=1)
-
-        if not isGM:
-            pts = np.array(cloud.x)[:, -3:]
-            fig.add_trace(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], mode='markers',
-                                       marker=dict(size=m1, color=color, opacity=0.5),
-                                       name=name, **group), row=1, col=1)
-
-        # Eixos do grânulo (segmentos de comprimento 2R passando pelo centro)
-        fig.add_trace(go.Scatter3d(x=[mx, mx, None, mx, mx, None, mx-r, mx+r],
-                                   y=[my, my, None, my-r, my+r, None, my, my],
-                                   z=[mz-r, mz+r, None, mz, mz, None, mz, mz],
-                                   mode='lines', line=dict(color=color, width=1), opacity=0.5,
-                                   hoverinfo='skip', **group), row=1, col=1)
-
-        fig.add_trace(go.Scatter3d(x=[mx], y=[my], z=[mz], mode='markers',
-                                   marker=dict(symbol='cross', size=m1*2, color=color),
-                                   name=f'{name} ({glabel})', **group), row=1, col=1)
-
-        # Hiperesfera: superfície + wireframe
-        u = np.linspace(0, 2 * np.pi, 20)
-        v = np.linspace(0, np.pi, 20)
-        sx = r * np.outer(np.cos(u), np.sin(v)) + mx
-        sy = r * np.outer(np.sin(u), np.sin(v)) + my
-        sz = r * np.outer(np.ones(np.size(u)), np.cos(v)) + mz
-        fig.add_trace(go.Surface(x=sx, y=sy, z=sz, colorscale=[[0, color], [1, color]],
-                                 opacity=0.05, showscale=False, hoverinfo='skip', **group),
-                      row=1, col=1)
-        fig.add_trace(go.Scatter3d(x=wireframe(sx), y=wireframe(sy), z=wireframe(sz), mode='lines',
-                                   line=dict(color=color, width=1), opacity=0.3,
-                                   hoverinfo='skip', **group), row=1, col=1)
-
-    fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers',
-                               marker=dict(symbol='cross', size=m1*2, color=black),
-                               name=glabel, legend='legend'), row=1, col=1)
+                                   marker=dict(symbol='cross', size=m1*2, color=black),
+                                   name=glabel, legend='legend'), **p3D)
 
     # --- Coluna 2: Granulação temporal do IED ---
-    for j in range(ftrs):
-        pos = dict(row=2*j+1, col=2)
-        for i, cloud in enumerate(teda.c):
-            if cloud.ID == 'GM': continue
-            y = np.array(cloud.x).T[-ftrs+j]
-            fig.add_trace(go.Scatter(x=cloud.t, y=y, mode='markers',
-                                     marker=dict(size=m2*1.5, color=colors[i]),
-                                     name=f'G{cloud.ID}', showlegend=False), **pos)
+    if 2 in show:
+        for j in range(ftrs):
+            pos = dict(row=2*j+1, col=gc[2])
+            for i, cloud in enumerate(teda.c):
+                if cloud.ID == 'GM': continue
+                y = np.array(cloud.x).T[-ftrs+j]
+                fig.add_trace(go.Scatter(x=cloud.t, y=y, mode='markers',
+                                         marker=dict(size=m2*1.5, color=colors[i]),
+                                         name=f'G{cloud.ID}', showlegend=False), **pos)
 
-        fig.update_yaxes(title_text=yAxisTitle[1], tickvals=np.round(np.linspace(0, 1, 6), 2), **pos)
-        fig.update_xaxes(title_text=(xAxisTitle[1] if j == ftrs-1 else None),
-                         showticklabels=(j == ftrs-1), **pos)
+            fig.update_yaxes(title_text=yAxisTitle[1], tickvals=np.round(np.linspace(0, 1, 6), 2), **pos)
+            fig.update_xaxes(title_text=(xAxisTitle[1] if j == ftrs-1 else None),
+                             showticklabels=(j == ftrs-1), **pos)
 
-    # --- Coluna 3 (topo): Predição de RUL ---
+    # --- Coluna 3: Predições de RUL (topo) e HI (base) ---
     def band(lo, hi, name, fillcolor, legend, pos):
         fig.add_trace(go.Scatter(x=xS, y=lo, mode='lines', line=dict(width=0),
                                  hoverinfo='skip', showlegend=False, legend=legend), **pos)
         fig.add_trace(go.Scatter(x=xS, y=hi, mode='lines', line=dict(width=0), fill='tonexty',
                                  fillcolor=fillcolor, hoverinfo='skip', name=name, legend=legend), **pos)
 
-    for y, name, color, dash, lnwdth, mrkr in zip(yS, names, colors2, dashes, lnwdths, mrkrs):
-        fig.add_trace(go.Scatter(x=xS, y=y, mode=('lines+markers' if mrkr else 'lines'),
-                                 line=dict(color=color, width=lnwdth, dash=dash),
-                                 marker=dict(symbol=mrkr, size=m3*1.35*1.5, color=color),
-                                 name=name, showlegend=(name is not None), legend='legend2'), **pRUL)
-    for y in (rulR*uL, rulR*uU):
-        fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='black', width=0.75),
-                                 showlegend=False, legend='legend2'), **pRUL)
-    band(rulR*uL, rulR*uU, Tolerance, 'rgba(0, 0, 0, 0.15)', 'legend2', pRUL)
-    band(rulL, rulU, Uncertainty, cyan, 'legend2', pRUL)
+    if 3 in show:
+        pRUL, pHI = dict(row=1, col=gc[3]), dict(row=ftrs+1, col=gc[3])
 
-    for i, cloud in enumerate(teda.c):
-        fig.add_trace(go.Scatter(x=cloud.t2, y=cloud.rulM, mode='markers',
-                                 marker=dict(symbol='star', size=m3*2.5, color=colors[i]),
-                                 name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
-                                 showlegend=False, legend='legend2'), **pRUL)
+        for y, name, color, dash, lnwdth, mrkr in zip(yS, names, colors2, dashes, lnwdths, mrkrs):
+            fig.add_trace(go.Scatter(x=xS, y=y, mode=('lines+markers' if mrkr else 'lines'),
+                                     line=dict(color=color, width=lnwdth, dash=dash),
+                                     marker=dict(symbol=mrkr, size=m3*1.35*1.5, color=color),
+                                     name=name, showlegend=(name is not None), legend='legend2'), **pRUL)
+        for y in (rulR*uL, rulR*uU):
+            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='black', width=0.75),
+                                     showlegend=False, legend='legend2'), **pRUL)
+        band(rulR*uL, rulR*uU, Tolerance, 'rgba(0, 0, 0, 0.15)', 'legend2', pRUL)
+        band(rulL, rulU, Uncertainty, cyan, 'legend2', pRUL)
 
-    if xi is None: xi = xS[int(0.2*len(xS)):][0]
-    if xf is None: xf = int(xS[-1]*1.075)
-    if yi is None: yi = 0
-    if yf is None:
-        yf = int(1.025*np.max(rulU[int(0.25*len(rulU)):int(0.75*len(rulU))]))
+        for i, cloud in enumerate(teda.c):
+            fig.add_trace(go.Scatter(x=cloud.t2, y=cloud.rulM, mode='markers',
+                                     marker=dict(symbol='star', size=m3*2.5, color=colors[i]),
+                                     name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
+                                     showlegend=False, legend='legend2'), **pRUL)
 
-    yc = yi + 0.1*(yf-yi)
-    xc = xi + 0.05*(xf-xi)
+        if xi is None: xi = xS[int(0.2*len(xS)):][0]
+        if xf is None: xf = int(xS[-1]*1.075)
+        if yi is None: yi = 0
+        if yf is None:
+            yf = int(1.025*np.max(rulU[int(0.25*len(rulU)):int(0.75*len(rulU))]))
 
-    fig.add_annotation(x=xc, y=yc, text=title_rul, showarrow=False, xanchor='left',
-                       yanchor='bottom', font=dict(size=13), **pRUL)
-    fig.update_xaxes(range=[xi, xf], showticklabels=False, ticks='', **pRUL)
-    fig.update_yaxes(range=[yi, yf], title_text=yAxisTitle[2], **pRUL)
+        yc = yi + 0.1*(yf-yi)
+        xc = xi + 0.05*(xf-xi)
 
-    # --- Coluna 3 (base): Predição de HI ---
-    fig.add_trace(go.Scatter(x=xS, y=hiR, mode='lines', line=dict(color='black', width=2),
-                             name='HI-R', legend='legend3'), **pHI)
-    fig.add_trace(go.Scatter(x=xS, y=hiP, mode='lines+markers', line=dict(color='blue', width=1.75),
-                             marker=dict(size=m3*1.5, color='blue'), name='HI-P', legend='legend3'), **pHI)
-    for y in (hiL, hiU):
-        fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='blue', width=1.75, dash='dash'),
-                                 showlegend=False, legend='legend3'), **pHI)
-    band(hiL, hiU, Uncertainty, cyan, 'legend3', pHI)
+        fig.add_annotation(x=xc, y=yc, text=title_rul, showarrow=False, xanchor='left',
+                           yanchor='bottom', font=dict(size=13), **pRUL)
+        fig.update_xaxes(range=[xi, xf], showticklabels=False, ticks='', **pRUL)
+        fig.update_yaxes(range=[yi, yf], title_text=yAxisTitle[2], **pRUL)
 
-    hL = np.min(hiL[int(0.2*len(xS)):])
-    hU = np.max(hiU[int(0.2*len(xS)):])
-    if yi2 is None: yi2 = hL - (5/90) * (hU-hL)
-    if yf2 is None: yf2 = hU + (5/90) * (hU-hL)
-    yc = yi2 + 0.1*(yf2-yi2)
+        fig.add_trace(go.Scatter(x=xS, y=hiR, mode='lines', line=dict(color='black', width=2),
+                                 name='HI-R', legend='legend3'), **pHI)
+        fig.add_trace(go.Scatter(x=xS, y=hiP, mode='lines+markers', line=dict(color='blue', width=1.75),
+                                 marker=dict(size=m3*1.5, color='blue'), name='HI-P', legend='legend3'), **pHI)
+        for y in (hiL, hiU):
+            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='blue', width=1.75, dash='dash'),
+                                     showlegend=False, legend='legend3'), **pHI)
+        band(hiL, hiU, Uncertainty, cyan, 'legend3', pHI)
 
-    fig.add_annotation(x=xc, y=yc, text=title_hi, showarrow=False, xanchor='left',
-                       yanchor='bottom', font=dict(size=13), **pHI)
-    fig.update_xaxes(range=[xi, xf], title_text=xAxisTitle[3], **pHI)
-    fig.update_yaxes(range=[yi2, yf2], title_text=yAxisTitle[3], **pHI)
+        hL = np.min(hiL[int(0.2*len(xS)):])
+        hU = np.max(hiU[int(0.2*len(xS)):])
+        if yi2 is None: yi2 = hL - (5/90) * (hU-hL)
+        if yf2 is None: yf2 = hU + (5/90) * (hU-hL)
+        yc = yi2 + 0.1*(yf2-yi2)
+
+        fig.add_annotation(x=xc, y=yc, text=title_hi, showarrow=False, xanchor='left',
+                           yanchor='bottom', font=dict(size=13), **pHI)
+        fig.update_xaxes(range=[xi, xf], title_text=xAxisTitle[3], **pHI)
+        fig.update_yaxes(range=[yi2, yf2], title_text=yAxisTitle[3], **pHI)
 
     # --- Coluna 4: WAPE das predições ---
-    end = min(len(xS), len(teda.wape_HI_hist))
-    for hist, label, color, pos in ((teda.wape_RUL_hist, wapes[0], 'blue', pWR),
-                                    (teda.wape_HI_hist, wapes[1], 'red', pWH)):
-        fig.add_trace(go.Scatter(x=xS[:end], y=hist[:end], mode='lines',
-                                 line=dict(color=color, width=1.75), name=label,
-                                 showlegend=False), **pos)
-        fig.add_annotation(x=0.55, y=0.85, xref='x domain', yref='y domain', text=label,
-                           showarrow=False, xanchor='left', yanchor='bottom',
-                           font=dict(size=13), **pos)
-        fig.add_annotation(x=xS[-1], y=hist[-1], text=f'{hist[-1]:.3f}', showarrow=True,
-                           arrowhead=2, arrowsize=1, arrowwidth=1, ax=-35, ay=30,
-                           font=dict(size=11), **pos)
-        fig.update_yaxes(title_text=yAxisTitle[4], **pos)
-    fig.update_xaxes(showticklabels=False, ticks='', **pWR)
-    fig.update_xaxes(title_text=xAxisTitle[5], **pWH)
+    if 4 in show:
+        pWR, pWH = dict(row=1, col=gc[4]), dict(row=ftrs+1, col=gc[4])
+        end = min(len(xS), len(teda.wape_HI_hist))
+        for hist, label, color, pos in ((teda.wape_RUL_hist, wapes[0], 'blue', pWR),
+                                        (teda.wape_HI_hist, wapes[1], 'red', pWH)):
+            fig.add_trace(go.Scatter(x=xS[:end], y=hist[:end], mode='lines',
+                                     line=dict(color=color, width=1.75), name=label,
+                                     showlegend=False), **pos)
+            fig.add_annotation(x=0.55, y=0.85, xref='x domain', yref='y domain', text=label,
+                               showarrow=False, xanchor='left', yanchor='bottom',
+                               font=dict(size=13), **pos)
+            fig.add_annotation(x=xS[-1], y=hist[-1], text=f'{hist[-1]:.3f}', showarrow=True,
+                               arrowhead=2, arrowsize=1, arrowwidth=1, ax=-35, ay=30,
+                               font=dict(size=11), **pos)
+            fig.update_yaxes(title_text=yAxisTitle[4], **pos)
+        fig.update_xaxes(showticklabels=False, ticks='', **pWR)
+        fig.update_xaxes(title_text=xAxisTitle[5], **pWH)
 
     # --- Layout geral ---
     fig.update_xaxes(showgrid=True, gridcolor=gridc, zeroline=False,
                      showline=True, linecolor='black', mirror=True)
     fig.update_yaxes(showgrid=True, gridcolor=gridc, zeroline=False,
                      showline=True, linecolor='black', mirror=True)
-    for pos in (pRUL, pHI, pWR, pWH):
-        fig.update_xaxes(griddash='dash', **pos)
-        fig.update_yaxes(griddash='dash', **pos)
+    for c in (3, 4):
+        if c not in show: continue
+        for row in (1, ftrs+1):
+            fig.update_xaxes(griddash='dash', row=row, col=gc[c])
+            fig.update_yaxes(griddash='dash', row=row, col=gc[c])
 
-    axis3d = dict(backgroundcolor=gray, showbackground=True, gridcolor='gray',
-                  title_font=dict(size=11))
-    fig.update_scenes(xaxis=dict(title_text=xAxisTitle[0], **axis3d),
-                      yaxis=dict(title_text=yAxisTitle[0], **axis3d),
-                      zaxis=dict(title_text=zAxisTitle[0], **axis3d),
-                      domain_y=[0.16, 1], row=1, col=1)
+    boxed = dict(bordercolor='#888', borderwidth=1, font=dict(size=10))
+    legends = {}
 
     # Legendas: 3D abaixo da cena (ncol colunas), RUL e HI no canto superior direito
-    sx0, sx1 = fig.layout.scene.domain.x
-    rx1 = fig.get_subplot(**pRUL).xaxis.domain[1]
-    ry1 = fig.get_subplot(**pRUL).yaxis.domain[1]
-    hy1 = fig.get_subplot(**pHI).yaxis.domain[1]
-    boxed = dict(bordercolor='#888', borderwidth=1, font=dict(size=10))
+    if 1 in show:
+        axis3d = dict(backgroundcolor=gray, showbackground=True, gridcolor='gray',
+                      title_font=dict(size=11))
+        fig.update_scenes(xaxis=dict(title_text=xAxisTitle[0], **axis3d),
+                          yaxis=dict(title_text=yAxisTitle[0], **axis3d),
+                          zaxis=dict(title_text=zAxisTitle[0], **axis3d),
+                          domain_y=[0.16, 1], **p3D)
+        sx0, sx1 = fig.layout.scene.domain.x
+        legends['legend'] = dict(orientation='h', x=(sx0+sx1)/2, y=0.14, xanchor='center', yanchor='top',
+                                 entrywidth=(sx1-sx0)/ncol, entrywidthmode='fraction',
+                                 itemsizing='constant', bgcolor=gray, **boxed)
+    if 3 in show:
+        rx1 = fig.get_subplot(**pRUL).xaxis.domain[1]
+        ry1 = fig.get_subplot(**pRUL).yaxis.domain[1]
+        hy1 = fig.get_subplot(**pHI).yaxis.domain[1]
+        legends['legend2'] = dict(x=rx1, y=ry1, xanchor='right', yanchor='top',
+                                  bgcolor='rgba(255, 255, 255, 0.8)', **boxed)
+        legends['legend3'] = dict(x=rx1, y=hy1, xanchor='right', yanchor='top',
+                                  bgcolor='rgba(255, 255, 255, 0.8)', **boxed)
 
     fig.update_layout(
         width=w, height=h,
         template='plotly_white',
         plot_bgcolor=gray,
         paper_bgcolor='white',
-        legend=dict(orientation='h', x=(sx0+sx1)/2, y=0.14, xanchor='center', yanchor='top',
-                    entrywidth=(sx1-sx0)/ncol, entrywidthmode='fraction',
-                    itemsizing='constant', bgcolor=gray, **boxed),
-        legend2=dict(x=rx1, y=ry1, xanchor='right', yanchor='top',
-                     bgcolor='rgba(255, 255, 255, 0.8)', **boxed),
-        legend3=dict(x=rx1, y=hy1, xanchor='right', yanchor='top',
-                     bgcolor='rgba(255, 255, 255, 0.8)', **boxed),
-        margin=dict(l=20, r=20, t=50, b=(70 if mergeID else 40))
+        margin=dict(l=20, r=20, t=50, b=(70 if mergeID else 40)),
+        **legends
     )
 
     if mergeID:
@@ -2072,9 +2089,9 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=550,
 def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
                     yi=None,yf=None,yi2=None,yf2=None,
                     xi=None,xf=None,ftrs=3, out=None, language='en',
-             mergeID=False, m1=4, m2=3, m3=3, ncol=4):
+             mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None):
 
-    
+
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
         yAxisTitle=['IED-X','IED/Ciclo','RUL/Ciclo','IS/Ciclo','WAPE/Ciclo','WAPE/Ciclo']
@@ -2110,7 +2127,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
     mrkrszs = [None,m3*1.35, None, None]
     yS = [teda.rulR,teda.rulP,teda.rulL,teda.rulU]
     xS = teda.t
-     
+
     radii = [cloud.R for cloud in teda.c]
     yticks = [i*0.25 for i in range(1,6)]+[0]
     merged_track = [(sorted(c.track, reverse=True)) for c in teda.c if len(c.track)>1]
@@ -2124,226 +2141,241 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
         if len(cloud.track) > 1:
             merged_clouds.append(cloud.track)
 
+    # Colunas visíveis (1: 3D, 2: IED temporal, 3: RUL/HI, 4: WAPE)
+    ratios = {1: 1, 2: 0.7, 3: 1, 4: 0.5}
+    show = [c for c in ratios if c not in (HideCol or [])]
+    if len(show) == 0: return
+    gc = {c: k for k, c in enumerate(show)}
+    w = w * sum(ratios[c] for c in show) / sum(ratios.values())
+
     fig = plt.figure(figsize=(w, h))
     fig.subplots_adjust(left=0.04, right=0.98, top=0.88, bottom=0.12,
                     wspace=0.12, hspace=0.5)
-    
-    gs = fig.add_gridspec(nrows=ftrs, ncols=4, width_ratios=[1, 0.7, 1, 0.5],
+
+    gs = fig.add_gridspec(nrows=ftrs, ncols=len(show), width_ratios=[ratios[c] for c in show],
                             wspace=0.25, hspace=0.3)
-    ax1 = fig.add_subplot(gs[:, 0], projection='3d') 
-    ax2 = [fig.add_subplot(gs[i, 1]) for i in range((ftrs))]
+    if 1 in show:
+        ax1 = fig.add_subplot(gs[:, gc[1]], projection='3d')
+    if 2 in show:
+        ax2 = [fig.add_subplot(gs[i, gc[2]]) for i in range((ftrs))]
 
-    gs_col3 = gridspec.GridSpecFromSubplotSpec(
-            nrows=2, 
-            ncols=1, 
-            subplot_spec=gs[:, 2], 
-            hspace=0.05,          # Espaçamento vertical entre ax3 e ax4
-            height_ratios=[1, 1]  # Força 50% de altura para cada um!
-        )
-    ax3 = fig.add_subplot(gs_col3[0, 0])
-    ax4 = fig.add_subplot(gs_col3[1, 0])
-
-    gs_col4 = gridspec.GridSpecFromSubplotSpec(
-                nrows=2, 
-                ncols=1, 
-                subplot_spec=gs[:, 3], 
+    if 3 in show:
+        gs_col3 = gridspec.GridSpecFromSubplotSpec(
+                nrows=2,
+                ncols=1,
+                subplot_spec=gs[:, gc[3]],
                 hspace=0.05,          # Espaçamento vertical entre ax3 e ax4
                 height_ratios=[1, 1]  # Força 50% de altura para cada um!
             )
+        ax3 = fig.add_subplot(gs_col3[0, 0])
+        ax4 = fig.add_subplot(gs_col3[1, 0])
 
-    ax5 = fig.add_subplot(gs_col4[0, 0])
-    ax6 = fig.add_subplot(gs_col4[1, 0])
+    if 4 in show:
+        gs_col4 = gridspec.GridSpecFromSubplotSpec(
+                    nrows=2,
+                    ncols=1,
+                    subplot_spec=gs[:, gc[4]],
+                    hspace=0.05,          # Espaçamento vertical entre ax3 e ax4
+                    height_ratios=[1, 1]  # Força 50% de altura para cada um!
+                )
 
-    for i, cloud in enumerate(teda.c):
-        for x in cloud.x:
-            
-            r = radii[i]
-            mx, my, mz = cloud.mean
-            l = 1
-            lx = [mx-l*r,mx+l*r]
-            ly = [my-l*r,my+l*r]
-            lz = [mz-l*r,mz+l*r]
-    
-            ms = [[[mx,mx],[my,my],lz],[[mx,mx],ly,[mz,mz]],[lx,[my,my],[mz,mz]]]
+        ax5 = fig.add_subplot(gs_col4[0, 0])
+        ax6 = fig.add_subplot(gs_col4[1, 0])
 
-            for m in ms:
-                x_,y_,z_ = m
-                ax1.plot(x_,y_,z_,
-                         color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                         linewidth=0.5,alpha=0.5,)
-
-            x = x[-3:]
-            ax1.scatter(x[0], x[1], x[2], 
-                color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                  alpha=0.5, marker='o',
-                  s=(m1*3 if cloud.ID != 'GM' else 0.00001))
-            
-
-        center = cloud.mean[-3:]
-        ax1.scatter([], [], [],label=(f'G{cloud.ID}' if cloud.ID != 'GM' else 'GM'),
-                    color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                      marker='o', s=m2*5)
-        ax1.scatter(center[0], center[1], center[2],
-                    color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                      marker='+', s=m1*25,linewidths=0.5)
-
-        if radii is not None :
-            r = radii[i]
-            u = np.linspace(0, 2 * np.pi, 20)
-            v = np.linspace(0, np.pi, 20)
-            x = r * np.outer(np.cos(u), np.sin(v)) + center[0]
-            y = r * np.outer(np.sin(u), np.sin(v)) + center[1]
-            z = r * np.outer(np.ones(np.size(u)), np.cos(v)) + center[2]
-            ax1.plot_surface(x, y, z,
-                             color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                               alpha=0.05, 
-                            linewidth=0, antialiased=True)
-            ax1.plot_wireframe(x, y, z,
-                               color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                                 alpha=0.3, linewidth=0.4)
-    
-    
-    ax1.scatter([], [], [], color='black', marker='+', s=m1*25,linewidths=0.75, label=glabel)
-    ax1.set_title(title[0])
-    ax1.set_xlabel(xAxisTitle[0], fontsize='small')
-    ax1.set_ylabel(yAxisTitle[0], fontsize='small')
-    ax1.set_zlabel(zAxisTitle[0], fontsize='small')
-    ax1.legend(fontsize='small', facecolor="#d9d9d9", framealpha=1,
-               loc='lower center',
-               bbox_to_anchor=(0.5, -0.2), 
-               ncol=ncol)
-    #ax1.set_facecolor("#727272")  # Dark gray background
-    # Set pane colors to a light gray shade
-    ax1.xaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
-    ax1.yaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
-    ax1.zaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
-    ax1.grid(color='gray', linestyle='--', linewidth=0.5)
-
-    for j,ax in enumerate(ax2):
-        L,U = np.inf,-np.inf
+    if 1 in show:
         for i, cloud in enumerate(teda.c):
-            if cloud.ID == 'GM': continue
-            y = np.array(cloud.x).T[-ftrs+j]
-            ax.plot(cloud.t, y, linestyle=' ', marker='o',
-                    markersize=m2, label=None, color=colors[i])
-            
-            if L>np.min(y): L = np.min(y) - 1.15*np.min(y)
-            if U<np.max(y): U = np.max(y) + 0.15*np.max(y)
+            for x in cloud.x:
 
-        yticks = np.round(np.linspace(0, 1, 6), 2).tolist()[1:] + [0]
-        ax.set_yticks(sorted(yticks))
-        #ax.set_ylim(L-0.05*U, U+0.05*U)
-        ax.set_xlabel(xAxisTitle[1], fontsize='small')
-        ax.set_ylabel(yAxisTitle[1], fontsize='small')
-        
-        if j< len(ax2)-1: 
-            ax.set_xlabel('')
-            ax.tick_params(labelleft=False,labelsize=0.1,axis='x',colors='1',)
-        if j==0: ax.set_title(title[1])
-        ax.set_facecolor("#d9d9d9") 
-        ax.grid()
+                r = radii[i]
+                mx, my, mz = cloud.mean
+                l = 1
+                lx = [mx-l*r,mx+l*r]
+                ly = [my-l*r,my+l*r]
+                lz = [mz-l*r,mz+l*r]
 
-    for y, name, color, linestyle,linewidth, marker,markersize in zip(yS, names, colors2, lnstls,lnwdths, mrkrs,mrkrszs):
-        ax3.plot(xS, y, label=name, linestyle=linestyle, linewidth=linewidth,
-                 marker=marker,markersize=markersize,
-                 color=color)
-    ax3.plot(xS, teda.rulR*uL, label=None, linestyle='-', linewidth=0.5, color='black')
-    ax3.plot(xS, teda.rulR*uU, label=None, linestyle='-', linewidth=0.5, color='black')
-    ax3.fill_between(xS, teda.rulR*uL, teda.rulR*uU,
-                         label=Tolerance,
-                         color ='black',alpha=.15,)
-    ax3.fill_between(xS, teda.rulU, teda.rulL,
-                         label=Uncertainty,
-                         color ='c',alpha=.3,)
-    
-    for i, cloud in enumerate(teda.c):
-        ax3.plot(cloud.t2,cloud.rulM, linestyle=' ', marker='*', markersize=m3, color=colors[i], label=None)
+                ms = [[[mx,mx],[my,my],lz],[[mx,mx],ly,[mz,mz]],[lx,[my,my],[mz,mz]]]
+
+                for m in ms:
+                    x_,y_,z_ = m
+                    ax1.plot(x_,y_,z_,
+                             color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                             linewidth=0.5,alpha=0.5,)
+
+                x = x[-3:]
+                ax1.scatter(x[0], x[1], x[2],
+                    color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                      alpha=0.5, marker='o',
+                      s=(m1*3 if cloud.ID != 'GM' else 0.00001))
 
 
+            center = cloud.mean[-3:]
+            ax1.scatter([], [], [],label=(f'G{cloud.ID}' if cloud.ID != 'GM' else 'GM'),
+                        color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                          marker='o', s=m2*5)
+            ax1.scatter(center[0], center[1], center[2],
+                        color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                          marker='+', s=m1*25,linewidths=0.5)
 
-    if xi is None: xi = xS[int(0.2*len(xS)):][0]
-    if xf is None: xf = int(xS[-1]*1.075)
-    if yi is None: yi = 0
-    if yf is None: 
-        rulRU = teda.rulU
-        yf = int(1.025*np.max(rulRU[int(0.25*len(rulRU)):int(0.75*len(rulRU))]))
+            if radii is not None :
+                r = radii[i]
+                u = np.linspace(0, 2 * np.pi, 20)
+                v = np.linspace(0, np.pi, 20)
+                x = r * np.outer(np.cos(u), np.sin(v)) + center[0]
+                y = r * np.outer(np.sin(u), np.sin(v)) + center[1]
+                z = r * np.outer(np.ones(np.size(u)), np.cos(v)) + center[2]
+                ax1.plot_surface(x, y, z,
+                                 color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                                   alpha=0.05,
+                                linewidth=0, antialiased=True)
+                ax1.plot_wireframe(x, y, z,
+                                   color=(colors[i] if cloud.ID != 'GM' else 'black'),
+                                     alpha=0.3, linewidth=0.4)
 
-    yc = yi + 0.1*(yf-yi)
-    xc = xi + 0.05*(xf-xi)
 
-    ax3.annotate(title_rul, xy=(xc,yc),fontsize='medium')
-    ax3.set_title(title[-1])
-    ax3.set_xlabel(None)
-    ax3.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
-    ax3.set_ylabel(yAxisTitle[2], fontsize='small')
-    ax3.set_xlim(xi,xf)
-    ax3.set_ylim(yi,yf)
-    ax3.set_facecolor("#d9d9d9") 
-    ax3.grid(True, linestyle='--', alpha=0.6)
-    ax3.legend(frameon=True,loc='upper right', fontsize='small',ncols=1)
+        ax1.scatter([], [], [], color='black', marker='+', s=m1*25,linewidths=0.75, label=glabel)
+        ax1.set_title(title[0])
+        ax1.set_xlabel(xAxisTitle[0], fontsize='small')
+        ax1.set_ylabel(yAxisTitle[0], fontsize='small')
+        ax1.set_zlabel(zAxisTitle[0], fontsize='small')
+        ax1.legend(fontsize='small', facecolor="#d9d9d9", framealpha=1,
+                   loc='lower center',
+                   bbox_to_anchor=(0.5, -0.2),
+                   ncol=ncol)
+        #ax1.set_facecolor("#727272")  # Dark gray background
+        # Set pane colors to a light gray shade
+        ax1.xaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
+        ax1.yaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
+        ax1.zaxis.set_pane_color((0.85, 0.85, 0.85, 1.0))
+        ax1.grid(color='gray', linestyle='--', linewidth=0.5)
 
-    ax4.plot(xS, teda.hiR, label='HI-R', linestyle='-', linewidth=1.5, color='black')
-    ax4.plot(xS, teda.hiP, label='HI-P', linestyle='-',marker='o',markersize=m3, linewidth=1.25, color='blue')
-    ax4.plot(xS, teda.hiL, label=None, linestyle='--', linewidth=1.25, color='blue')
-    ax4.plot(xS, teda.hiU, label=None, linestyle='--', linewidth=1.25, color='blue')
-    ax4.fill_between(xS, teda.hiL, teda.hiU,
+    if 2 in show:
+        for j,ax in enumerate(ax2):
+            L,U = np.inf,-np.inf
+            for i, cloud in enumerate(teda.c):
+                if cloud.ID == 'GM': continue
+                y = np.array(cloud.x).T[-ftrs+j]
+                ax.plot(cloud.t, y, linestyle=' ', marker='o',
+                        markersize=m2, label=None, color=colors[i])
+
+                if L>np.min(y): L = np.min(y) - 1.15*np.min(y)
+                if U<np.max(y): U = np.max(y) + 0.15*np.max(y)
+
+            yticks = np.round(np.linspace(0, 1, 6), 2).tolist()[1:] + [0]
+            ax.set_yticks(sorted(yticks))
+            #ax.set_ylim(L-0.05*U, U+0.05*U)
+            ax.set_xlabel(xAxisTitle[1], fontsize='small')
+            ax.set_ylabel(yAxisTitle[1], fontsize='small')
+
+            if j< len(ax2)-1:
+                ax.set_xlabel('')
+                ax.tick_params(labelleft=False,labelsize=0.1,axis='x',colors='1',)
+            if j==0: ax.set_title(title[1])
+            ax.set_facecolor("#d9d9d9")
+            ax.grid()
+
+    if 3 in show:
+        for y, name, color, linestyle,linewidth, marker,markersize in zip(yS, names, colors2, lnstls,lnwdths, mrkrs,mrkrszs):
+            ax3.plot(xS, y, label=name, linestyle=linestyle, linewidth=linewidth,
+                     marker=marker,markersize=markersize,
+                     color=color)
+        ax3.plot(xS, teda.rulR*uL, label=None, linestyle='-', linewidth=0.5, color='black')
+        ax3.plot(xS, teda.rulR*uU, label=None, linestyle='-', linewidth=0.5, color='black')
+        ax3.fill_between(xS, teda.rulR*uL, teda.rulR*uU,
+                             label=Tolerance,
+                             color ='black',alpha=.15,)
+        ax3.fill_between(xS, teda.rulU, teda.rulL,
                              label=Uncertainty,
                              color ='c',alpha=.3,)
 
-    hiL = np.min(teda.hiL[int(0.2*len(xS)):])
-    hiU = np.max(teda.hiU[int(0.2*len(xS)):])
+        for i, cloud in enumerate(teda.c):
+            ax3.plot(cloud.t2,cloud.rulM, linestyle=' ', marker='*', markersize=m3, color=colors[i], label=None)
 
-    if yi2 is None: 
-        yi2 = hiL - (5/90) * (hiU-hiL)
 
-    if yf2 is None: 
-        yf2 = hiU + (5/90) * (hiU-hiL)
 
-    yc = yi2 + 0.1*(yf2-yi2)
+        if xi is None: xi = xS[int(0.2*len(xS)):][0]
+        if xf is None: xf = int(xS[-1]*1.075)
+        if yi is None: yi = 0
+        if yf is None:
+            rulRU = teda.rulU
+            yf = int(1.025*np.max(rulRU[int(0.25*len(rulRU)):int(0.75*len(rulRU))]))
 
-    ax4.annotate(title_hi, xy=(xc,yc),fontsize='medium')
-    ax4.set_xlabel(xAxisTitle[3], fontsize='small')
-    ax4.set_ylabel(yAxisTitle[3], fontsize='small')
-    ax4.set_xlim(xi, xf)
-    ax4.set_ylim(yi2, yf2)
-    ax4.set_facecolor("#d9d9d9") 
-    ax4.grid(True, linestyle='--', alpha=0.6)
-    ax4.legend(frameon=True, fontsize='small')
+        yc = yi + 0.1*(yf-yi)
+        xc = xi + 0.05*(xf-xi)
 
-    end = min(len(xS),len(teda.wape_HI_hist))
-    ax5.annotate(wapes[0], xy=(0.55,0.85),xycoords='axes fraction',fontsize='medium')
-    ax5.annotate(
-                    f'{teda.wape_RUL_hist[-1]:.3f}',
-                      xy=(xS[-1],teda.wape_RUL_hist[-1]), xycoords='data',
+        ax3.annotate(title_rul, xy=(xc,yc),fontsize='medium')
+        ax3.set_title(title[-1])
+        ax3.set_xlabel(None)
+        ax3.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+        ax3.set_ylabel(yAxisTitle[2], fontsize='small')
+        ax3.set_xlim(xi,xf)
+        ax3.set_ylim(yi,yf)
+        ax3.set_facecolor("#d9d9d9")
+        ax3.grid(True, linestyle='--', alpha=0.6)
+        ax3.legend(frameon=True,loc='upper right', fontsize='small',ncols=1)
+
+        ax4.plot(xS, teda.hiR, label='HI-R', linestyle='-', linewidth=1.5, color='black')
+        ax4.plot(xS, teda.hiP, label='HI-P', linestyle='-',marker='o',markersize=m3, linewidth=1.25, color='blue')
+        ax4.plot(xS, teda.hiL, label=None, linestyle='--', linewidth=1.25, color='blue')
+        ax4.plot(xS, teda.hiU, label=None, linestyle='--', linewidth=1.25, color='blue')
+        ax4.fill_between(xS, teda.hiL, teda.hiU,
+                                 label=Uncertainty,
+                                 color ='c',alpha=.3,)
+
+        hiL = np.min(teda.hiL[int(0.2*len(xS)):])
+        hiU = np.max(teda.hiU[int(0.2*len(xS)):])
+
+        if yi2 is None:
+            yi2 = hiL - (5/90) * (hiU-hiL)
+
+        if yf2 is None:
+            yf2 = hiU + (5/90) * (hiU-hiL)
+
+        yc = yi2 + 0.1*(yf2-yi2)
+
+        ax4.annotate(title_hi, xy=(xc,yc),fontsize='medium')
+        ax4.set_xlabel(xAxisTitle[3], fontsize='small')
+        ax4.set_ylabel(yAxisTitle[3], fontsize='small')
+        ax4.set_xlim(xi, xf)
+        ax4.set_ylim(yi2, yf2)
+        ax4.set_facecolor("#d9d9d9")
+        ax4.grid(True, linestyle='--', alpha=0.6)
+        ax4.legend(frameon=True, fontsize='small')
+
+    if 4 in show:
+        end = min(len(xS),len(teda.wape_HI_hist))
+        ax5.annotate(wapes[0], xy=(0.55,0.85),xycoords='axes fraction',fontsize='medium')
+        ax5.annotate(
+                        f'{teda.wape_RUL_hist[-1]:.3f}',
+                          xy=(xS[-1],teda.wape_RUL_hist[-1]), xycoords='data',
+                    xytext=(0.90, 0.40),
+                    textcoords='axes fraction',fontsize='small',
+                    arrowprops=dict(facecolor='black', shrink=0.05, width=0.01,headwidth=5,headlength=5),
+                    horizontalalignment='right',
+                    verticalalignment='top')
+        ax5.plot(xS[:end],teda.wape_RUL_hist[:end], label=wapes[1], linestyle='-', linewidth=1.25, color='blue')
+        ax5.set_title(title_wape)
+        ax5.set_xlabel(None)
+        ax5.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+        ax5.set_ylabel(yAxisTitle[4], fontsize='small')
+        ax5.set_facecolor("#d9d9d9")
+        ax5.grid(True, linestyle='--', alpha=0.6)
+
+        ax6.annotate(wapes[1], xy=(0.55,0.85),xycoords='axes fraction',fontsize='medium')
+        ax6.annotate(
+                    f'{teda.wape_HI_hist[-1]:.3f}',
+                      xy=(xS[-1],teda.wape_HI_hist[-1]), xycoords='data',
                 xytext=(0.90, 0.40),
                 textcoords='axes fraction',fontsize='small',
                 arrowprops=dict(facecolor='black', shrink=0.05, width=0.01,headwidth=5,headlength=5),
-                horizontalalignment='right', 
+                horizontalalignment='right',
                 verticalalignment='top')
-    ax5.plot(xS[:end],teda.wape_RUL_hist[:end], label=wapes[1], linestyle='-', linewidth=1.25, color='blue')
-    ax5.set_title(title_wape)
-    ax5.set_xlabel(None)
-    ax5.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
-    ax5.set_ylabel(yAxisTitle[4], fontsize='small')
-    ax5.set_facecolor("#d9d9d9") 
-    ax5.grid(True, linestyle='--', alpha=0.6)
 
-    ax6.annotate(wapes[1], xy=(0.55,0.85),xycoords='axes fraction',fontsize='medium')
-    ax6.annotate(
-                f'{teda.wape_HI_hist[-1]:.3f}',
-                  xy=(xS[-1],teda.wape_HI_hist[-1]), xycoords='data',
-            xytext=(0.90, 0.40),
-            textcoords='axes fraction',fontsize='small',
-            arrowprops=dict(facecolor='black', shrink=0.05, width=0.01,headwidth=5,headlength=5),
-            horizontalalignment='right', 
-            verticalalignment='top')
-    
-            #arrowprops=dict(facecolor='black', width=0.01,headwidth=5))
-    ax6.plot(xS[:end],teda.wape_HI_hist[:end], label=wapes[0], linestyle='-', linewidth=1.25, color='red')
-    ax6.set_ylabel(yAxisTitle[5], fontsize='small')
-    ax6.set_xlabel(xAxisTitle[5], fontsize='small')
-    ax6.set_facecolor("#d9d9d9") 
-    ax6.grid(True, linestyle='--', alpha=0.6)
+                #arrowprops=dict(facecolor='black', width=0.01,headwidth=5))
+        ax6.plot(xS[:end],teda.wape_HI_hist[:end], label=wapes[0], linestyle='-', linewidth=1.25, color='red')
+        ax6.set_ylabel(yAxisTitle[5], fontsize='small')
+        ax6.set_xlabel(xAxisTitle[5], fontsize='small')
+        ax6.set_facecolor("#d9d9d9")
+        ax6.grid(True, linestyle='--', alpha=0.6)
     if mergeID: fig.text(0.5, 0.1, merged_track, fontsize=10, ha='center', va='bottom', transform=fig.transFigure)
     if out is not None and title is not None:
         plt.savefig(out, dpi=500, transparent=False)
