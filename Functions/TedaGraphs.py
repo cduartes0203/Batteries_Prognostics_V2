@@ -1812,7 +1812,14 @@ def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=N
 def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
-                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None):
+                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+    '''
+    dsi_mode: tratamento de DSI com 4 ou mais atributos (RS com 4+ colunas)
+        'last3': coluna 1 (granulação espacial 3D) usa apenas os 3 últimos atributos do DSI
+                 (projeção dos centros, pontos e hiperesferas nesses 3 eixos; raio inalterado)
+        'hide' : oculta a coluna 1
+    A coluna 2 mostra os ftrs últimos atributos (ftrs limitado à dimensão do DSI).
+    '''
 
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
@@ -1838,6 +1845,15 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
         Uncertainty = f'Uncertainty'
         glabel = 'G-Center'
     uL, uU = 1-uncertainty,1+uncertainty
+
+    # DSI com 4+ atributos: 3D com os 3 últimos (rótulos com o índice do atributo) ou coluna 1 oculta
+    dim = len(np.asarray(teda.c[0].mean))
+    ftrs = min(ftrs, dim)
+    if dsi_mode not in ('last3', 'hide'): raise ValueError("dsi_mode deve ser 'last3' ou 'hide'.")
+    if dim > 3:
+        if dsi_mode == 'hide': HideCol = list(HideCol or []) + [1]
+        pfx = 'IED' if language == 'pt' else 'DSI'
+        xAxisTitle[0], yAxisTitle[0], zAxisTitle[0] = f'{pfx}-{dim-2}', f'{pfx}-{dim-1}', f'{pfx}-{dim}'
 
     # Cores: 'plasma' amostrada por grânulo (equivalente ao cmap.resampled do PLT)
     colors = px.colors.sample_colorscale('Plasma', np.linspace(0, 1, len(teda.c)))
@@ -2089,7 +2105,14 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
 def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
                     yi=None,yf=None,yi2=None,yf2=None,
                     xi=None,xf=None,ftrs=3, out=None, language='en',
-             mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None):
+             mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+    '''
+    dsi_mode: tratamento de DSI com 4 ou mais atributos (RS com 4+ colunas)
+        'last3': coluna 1 (granulação espacial 3D) usa apenas os 3 últimos atributos do DSI
+                 (projeção dos centros, pontos e hiperesferas nesses 3 eixos; raio inalterado)
+        'hide' : oculta a coluna 1
+    A coluna 2 mostra os ftrs últimos atributos (ftrs limitado à dimensão do DSI).
+    '''
 
 
     if language == 'pt':
@@ -2116,6 +2139,16 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
         Uncertainty = f'Uncertainty'
         glabel = 'G-Center'
     uL, uU = 1-uncertainty,1+uncertainty
+
+    # DSI com 4+ atributos: 3D com os 3 últimos (rótulos com o índice do atributo) ou coluna 1 oculta
+    dim = len(np.asarray(teda.c[0].mean))
+    ftrs = min(ftrs, dim)
+    if dsi_mode not in ('last3', 'hide'): raise ValueError("dsi_mode deve ser 'last3' ou 'hide'.")
+    if dim > 3:
+        if dsi_mode == 'hide': HideCol = list(HideCol or []) + [1]
+        pfx = 'IED' if language == 'pt' else 'DSI'
+        xAxisTitle[0], yAxisTitle[0], zAxisTitle[0] = f'{pfx}-{dim-2}', f'{pfx}-{dim-1}', f'{pfx}-{dim}'
+
     L,U = np.inf,-np.inf
     mid = ftrs // 2
     cmap = mpl.colormaps.get_cmap('plasma').resampled(len(teda.c))
@@ -2187,7 +2220,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
             for x in cloud.x:
 
                 r = radii[i]
-                mx, my, mz = cloud.mean
+                mx, my, mz = np.asarray(cloud.mean)[-3:]
                 l = 1
                 lx = [mx-l*r,mx+l*r]
                 ly = [my-l*r,my+l*r]

@@ -375,7 +375,7 @@ class AutoCloud:
 				dist = np.linalg.norm(cloud.mean - center)
 				if dist + cloud.R > radius:
 					diff = dist + cloud.R - radius
-					direction = (center - cloud.mean) / dist if dist > 0 else np.array([1, 0, 0])
+					direction = (center - cloud.mean) / dist if dist > 0 else np.eye(len(center))[0]   # vetor unitário na dimensão do DSI
 					center = center - direction * (diff / 2.0)
 					radius += diff / 2.0
 		
