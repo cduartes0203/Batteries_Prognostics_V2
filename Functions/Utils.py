@@ -18,8 +18,11 @@ from sklearn.preprocessing import StandardScaler
 
 fs=32000
 
-def NormalizeSeries(x,lB=0,uB=1):
-    xNorm = ((uB-lB)*((x-np.min(x))/(np.max(x)-np.min(x))))+lB
+def NormalizeSeries(x,lB=None,uB=None):
+    if lB is None: lB = np.min(x)
+    if uB is None: uB = np.max(x)
+
+    xNorm = ((x-lB)/(uB - lB))
     return xNorm
 
 def signal_entropy(signal, bins=50):
@@ -39,9 +42,6 @@ def normalize_df(df):
 
 # filters ###############################################################################################################################
 
-def moving_average_df(df, window_size):
-
-    return df.apply(lambda col: np.convolve(col, np.ones(window_size) / window_size, mode='same'))
 
 def exponential_moving_average(data, alpha=0.3):
     ema = [data.iloc[0]]  # Start with the first value
@@ -372,21 +372,22 @@ def normalize_df(df, lB=0, uB=1):
 
 # filters ###############################################################################################################################
 
-def moving_average_df(df, window_size):
+def dfMovingAvg(df, window_size):
 
     return df.apply(lambda col: np.convolve(col, np.ones(window_size) / window_size, mode='same'))
 
-def exponential_moving_average(data, alpha=0.3):
+def ExpMovAvg(data, alpha=0.3):
     ema = [data.iloc[0]]  # Start with the first value
     for i in range(1, len(data)):
         ema.append(alpha * data.iloc[i] + (1 - alpha) * ema[i-1])
     return pd.Series(ema, index=data.index)
 
-def exponential_moving_average_df(df, alpha=0.3):
+def dfExpMovAvg(df, alpha=0.3):
     ema_df = df.copy()
     for col in df.columns:
-        ema_df[col] = exponential_moving_average(df[col], alpha)
+        ema_df[col] = ExpMovAvg(df[col], alpha)
     return ema_df
+
 
 def gaussian_smoothing(data, sigma=2):
     return pd.Series(gaussian_filter1d(data, sigma=sigma))
@@ -676,6 +677,26 @@ def process_RS(df_RS,nRS):
     vec.append(df[-nRS:].flatten())
     indx.append(df_RS.index.values[-nRS:][-1])
     return np.array(vec)
+
+def WindowDSI(df, w):
+    '''
+    Janela de valores passados de cada atributo do DSI.
+    Linha k (k = w-1, ..., n-1) = [a_{k-w+1}, b_{k-w+1}, ..., a_k, b_k, ...]: as w últimas amostras do DSI
+    concatenadas em ordem temporal (da mais antiga à mais recente), cada uma com todos os atributos.
+    Ex. (w = 2): [[a1,b1,c1],[a2,b2,c2],[a3,b3,c3]] -> [[a1,b1,c1,a2,b2,c2],[a2,b2,c2,a3,b3,c3]]
+
+    df: DataFrame (ou array 2D) com uma amostra por linha. w: comprimento da janela (1 <= w <= nº de linhas).
+    Retorna um DataFrame com n-w+1 linhas e (nº de colunas)*w colunas, nomeadas '<col>_t-<j>' (t-0 = mais recente),
+    indexado pelo índice da amostra mais recente de cada janela. w = 1 devolve uma cópia de df.
+    '''
+    df = pd.DataFrame(df)
+    w = int(w)
+    if not 1 <= w <= len(df): raise ValueError(f'w deve estar entre 1 e {len(df)} (nº de linhas).')
+    vals = df.to_numpy()
+    win = np.lib.stride_tricks.sliding_window_view(vals, w, axis=0)   # (n-w+1, nº de colunas, w)
+    win = win.transpose(0, 2, 1)                                        # (n-w+1, w, nº de colunas): ordem temporal
+    cols = [f'{c}_t-{w-1-j}' for j in range(w) for c in df.columns]
+    return pd.DataFrame(win.reshape(len(win), -1), index=df.index[w-1:], columns=cols)
 
 def process_HI(df_HI,nHI,init):
     hi = df_HI.iloc[:,0].values

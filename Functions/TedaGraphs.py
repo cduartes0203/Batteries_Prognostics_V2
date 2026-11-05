@@ -1678,7 +1678,7 @@ def PlotDSI_2D_PLT(teda, w=15, h=4,ftrs=None, out=None,
     
     plt.show()
 
-def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=None, language='pt',
+'''def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=None, language='pt',
              mergeID=False,lnwdth=0.75, ftcks=7, flbl=9, fttl=8.5,
              flgnd=7, loc=None,anchor=None, m1=4, m2=3, m3=4, ncol=1):
     
@@ -1807,9 +1807,10 @@ def PlotDSI_3D_PLT(teda, w=15, h=4,yi=None,yf=None,xi=None,xf=None,ftrs=3, out=N
     if out is not None and title is not None:
         plt.savefig(out, dpi=500, transparent=False)
     
-    plt.show()
+    plt.show()'''
 
-def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
+
+def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
                    mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
@@ -1820,7 +1821,9 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
         'hide' : oculta a coluna 1
     A coluna 2 mostra os ftrs últimos atributos (ftrs limitado à dimensão do DSI).
     '''
-
+    if w is None: w = 1500
+    if h is None: h = 450
+    
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
         yAxisTitle=['IED-X','IED/Ciclo','RUL/Ciclo','IS/Ciclo','WAPE/Ciclo','WAPE/Ciclo']
@@ -2102,7 +2105,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=1500, h=450,
 
     fig.show()
 
-def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
+def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                     yi=None,yf=None,yi2=None,yf2=None,
                     xi=None,xf=None,ftrs=3, out=None, language='en',
              mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
@@ -2113,7 +2116,9 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=15, h=4,
         'hide' : oculta a coluna 1
     A coluna 2 mostra os ftrs últimos atributos (ftrs limitado à dimensão do DSI).
     '''
+    if w is None: w = 15
 
+    if h is None: h = 4
 
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
@@ -2572,3 +2577,29 @@ def PlotGranulesSpace(teda, mode='markers',hold=False,
         return fig
     else: 
         fig.show()
+
+def PlotSimulation(teda, mode='plt', uncertainty=0.25, w=None, h=None,
+                   yi=None, yf=None, yi2=None, yf2=None,
+                   xi=None, xf=None, ftrs=3, out=None, language='en',
+                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+
+    # Sem predições (ex.: SimGranulation): oculta as colunas 3 (RUL/HI) e 4 (WAPE)
+    if len(teda.rulP) == 0:
+        HideCol = sorted(set(HideCol or []) | {3, 4})
+
+    if mode == 'plt':
+        PlotDSI_3D_PLT(teda, uncertainty, w, h, yi, yf, yi2, yf2,
+                   xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode)
+    elif mode == 'ply':
+        PlotDSI_3D_PLY(teda, uncertainty, w, h, yi, yf, yi2, yf2,
+                       xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode)
+
+def PlotGranulation(teda, mode='plt', w=None, h=None, ftrs=3, out=None, language='en',
+                    mergeID=False, m1=4, m2=3, ncol=4, dsi_mode='last3'):
+    '''
+    Resultado de SimGranulation: granulação espacial 3D (coluna 1) e temporal (coluna 2) do DSI.
+    mode: 'plt' (matplotlib) ou 'ply' (plotly). dsi_mode: 'last3' (3D com os 3 últimos atributos de DSI com 4+)
+    ou 'hide' (oculta o 3D). As colunas de predição (RUL/HI) e WAPE são sempre ocultadas.
+    '''
+    PlotSimulation(teda, mode=mode, w=w, h=h, ftrs=ftrs, out=out, language=language,
+                   mergeID=mergeID, m1=m1, m2=m2, ncol=ncol, HideCol=[3, 4], dsi_mode=dsi_mode)

@@ -5,6 +5,34 @@ from OLD.DataCloud_V4 import *
 from Functions.RLS import *
 import copy
 
+def RunTag(filename=None, feedback=None, wtaG=None, wtaP=None):
+    # Uma pasta de resultados por configuração (feedback, wtaG, wtaP)
+    feedback = FEEDBACK if feedback is None else feedback
+    wtaG = WTAG if wtaG is None else wtaG
+    wtaP = WTAP if wtaP is None else wtaP
+    return f'{filename}_{feedback}_G{int(wtaG)}P{int(wtaP)}'
+
+def RefEoL(sig, eol, nI, mO, mode):
+    '''
+    Referência da RUL real baseada no limiar de EoL (eq. 12): RUL_real = iEoL - k_dado.
+    O AutoCloud calcula rulR = ref - k, com k = j + 2 na iteração j, e o PrepareData
+    alinha a iteração j à amostra k_dado = k0 + j. Logo ref = iEoL - k0 + 2.
+    Retorna ref e J, o número de iterações com RUL real >= 1.
+    '''
+    sig = np.asarray(sig, dtype=float)
+    if not np.any(sig <= eol): raise ValueError('O HI nunca atinge o limiar de EoL.')
+    iEoL = int(np.argmax(sig <= eol))
+    k0 = (max(nI, 1, mO) if mode in ('ahead', 1) else max(nI, 1)) - 1
+    return iEoL - k0 + 2, iEoL - k0, len(sig)-nI+1
+
+def nOMax(sig, eol):
+    '''
+    Maior nO (modo 'ahead') para o qual o fluxo do PrepareData alcança a última amostra antes do EoL.
+    A última janela fica em k = K - nO - 2 (o PrepareData descarta a última); exigir k >= iEoL - 1
+    dá nO <= K - iEoL - 1, independente de nI e mO. No modo 'past' o fluxo sempre alcança o EoL.
+    '''
+    sig = np.asarray(sig, dtype=float)
+    return len(sig) - int(np.argmax(sig <= eol)) - 1
 
 class AutoCloud:
 	'''
@@ -843,6 +871,26 @@ class AutoCloud:
 			if(merge): 
 				i = 0
 			else: i += 1
+
+	def SimGranularRUL(self,J,L,X,Y,Z):
+		for j,_ in enumerate(X[:J]):
+			self.run(X[j])
+			self.RUL_Prediction(Y[j],mode='interval',lim=L,show=False)
+			self.WAPE_HI2(Y[j],Z[j])
+			self.Adapt(Y[j],Z[j])
+			self.UpdateRLS(mode='HI')
+
+	def SimGranulation(self,X,J=None):
+		'''
+		Simula apenas a granulação do DSI (AutoCloud), sem predição de HI/RUL nem treino das RNNs.
+		X: DSI, uma amostra por linha. Aceita a saída X de PrepareData (mesmos grânulos de SimGranularRUL)
+		   ou o RS bruto (DataFrame ou array: granula todas as amostras).
+		J: número de amostras granuladas; None = todas (J de RefEoL reproduz o trecho de SimGranularRUL).
+		'''
+		X = np.asarray(X, dtype=float)
+		if X.ndim == 1: X = X.reshape(-1, 1)
+		for x in X[:J]:
+			self.run(x)
 
 	def run(self,X):
 		self.alfa = np.zeros((np.size(self.c)),dtype=float)
