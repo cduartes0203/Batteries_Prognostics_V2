@@ -50,11 +50,14 @@ class eRNN:
 
     ηS: [η_out, η_rec, η_in]; values >= 1 are read as exponents N -> 10^-N.
 
-    nPast: number of past samples at the start of the output window in 'ahead' mode
-           (mO in PrepareData). The one-step-ahead prediction is output[nPast].
+    nO   : length of the output window Z_k = [h_{k-nPast+1}, ..., h_k, h_{k+1}, ...] (past + future values).
+    nPast: number of past samples at the start of the output window (mO in PrepareData).
+           The one-step-ahead prediction h_{k+1} is output[nPast].
+    mode : legacy argument (None = not used). Kept only for older AutoCloud versions that still pass it:
+           'past'/0 -> one-step-ahead prediction is the last output (index nO - 1); 'ahead'/1 -> output[nPast].
     '''
 
-    def __init__(self, nI, nR, nO, ηS=None, τ=10, sd=42, mode='past', act='tanh',
+    def __init__(self, nI, nR, nO, ηS=None, τ=10, sd=42, mode=None, act='tanh',
                  feedback='symmetric', store_hist=False, nPast=0):
 
         if isinstance(nR, (int, np.integer)):
@@ -75,11 +78,11 @@ class eRNN:
         self.act = act
         self.feedback = feedback
         self.store_hist = store_hist
-        # Índice da predição um passo à frente: último em 'past'; em 'ahead' a janela de saída
-        # começa com nPast valores passados, logo o próximo valor está no índice nPast
+        # Índice da predição um passo à frente: a janela de saída começa com nPast valores passados,
+        # logo h_{k+1} está no índice nPast (modo legado 'past': último índice, nO - 1)
         if not 0 <= int(nPast) < nO:
             raise ValueError('nPast deve satisfazer 0 <= nPast < nO.')
-        self.n = -1 if mode == 'past' else int(nPast)
+        self.n = nO - 1 if mode == 'past' else int(nPast)
         self.k = 1
         self.nI, self.nO = nI + 1, nO
 

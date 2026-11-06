@@ -723,82 +723,67 @@ def read_pkl(path):
         data = pickle.load(f)
     return data
 
-def PrepareData(df_RS, df_HI, nX, nY, mY=0, nZ=1, mode='past'):
+def PrepareData(df_RS, df_HI, w=1, nI=1, nO=1, mO=0):
+    '''
+    Prepara e alinha no tempo as amostras do DSI (granulação) e do HI (entrada/saída das RNNs).
 
-    if mode == 1:
-        mode = 'ahead'
-    elif mode == 0:
-        mode = 'past'
-    """
-    Prepara e alinha as janelas temporais para os modelos de predição (X, Y) e clusterização (Z).
-    
+    Para cada instante k válido (k = k0, ..., K-1-nO, com k0 = max(w, nI, mO) - 1):
+        X_k = [a_{k-w+1}, b_{k-w+1}, ..., a_k, b_k, ...]       janela de w amostras do DSI (WindowDSI, ordem temporal)
+        Y_k = [h_{k-nI+1}, ..., h_k]                            nI valores passados do HI (entrada das RNNs)
+        Z_k = [h_{k-mO+1}, ..., h_k, h_{k+1}, ..., h_{k+nO}]    mO valores passados (incluindo h_k) + nO futuros
+    O valor um passo à frente h_{k+1} está sempre na coordenada mO de Z_k (eRNN.n = nPast = mO).
+    Ex. (w=2, nI=4, nO=2, mO=2): X_k = [a_{k-1},b_{k-1},a_k,b_k], Y_k = [h_{k-3},...,h_k], Z_k = [h_{k-1},h_k,h_{k+1},h_{k+2}]
+
     Parâmetros:
-    -----------
-    df_RS : pd.DataFrame ou np.ndarray (K x 3)
-        Série temporal multidimensional para clusterização.
-    df_HI : pd.DataFrame, pd.Series ou np.ndarray (K x 1)
-        Série temporal monodimensional para predição autoregressiva.
-    nX : int
-        Tamanho da janela de dados passados para o input X.
-    nY : int
-        Tamanho da janela de dados futuros para o output Y (modo 'ahead') ou tamanho total de Y (modo 'past').
-    mY : int, default=0
-        Quantidade de dados PASSADOS adicionados à janela Y no modo 'ahead'. Ignorado no modo 'past'.
-    nZ : int, default=1
-        Tamanho da janela de dados passados para Z.
-    mode : str, 'past' ou 'ahead'
-        Estratégia de construção da janela de saída Y.
-        
+        df_RS : DSI (DataFrame ou array 2D, K x nº de atributos), uma amostra por linha.
+        df_HI : HI (DataFrame/Series/array com K valores).
+        w     : comprimento da janela do DSI (w >= 1).
+        nI    : nº de valores passados do HI em Y_k (nI >= 1).
+        nO    : nº de valores futuros do HI em Z_k (nO >= 1).
+        mO    : nº de valores passados do HI em Z_k, incluindo h_k (mO >= 0).
     Retorna:
-    --------
-    Zs, Xs, Ys : np.ndarray
-        Arrays contendo as janelas alinhadas.
-    """
-    ST = np.array(df_HI).ravel()
-    RS = np.array(df_RS)
+        X, Y, Z : np.ndarray (mesmo nº de linhas F), linha j = instante kX[j]
+        kX      : np.ndarray com os instantes k (posição da amostra em df_RS/df_HI) de cada linha
+    '''
+    w, nI, nO, mO = int(w), int(nI), int(nO), int(mO)
+    if w < 1 or nI < 1 or nO < 1 or mO < 0:
+        raise ValueError('Requer w >= 1, nI >= 1, nO >= 1 e mO >= 0.')
+    ST = np.asarray(df_HI, dtype=float).ravel()
+    RS = np.asarray(df_RS, dtype=float)
+    if RS.ndim == 1: RS = RS.reshape(-1, 1)
     K = len(ST)
+    if len(RS) != K:
+        raise ValueError(f'RS ({len(RS)} amostras) e HI ({K} amostras) devem ter o mesmo comprimento.')
 
-    # 1. Determina o menor k possível com base nas janelas passadas (nX, nZ e mY se 'ahead')
-    if mode == 'ahead':
-        k_inicio = max(nX, nZ, mY) - 1
-        k_fim = K - nY - 1  # Garante que k + nY não ultrapasse K - 1
-    elif mode == 'past':
-        if nY > nX:
-            raise ValueError("Na abordagem 'past', nY deve ser menor ou igual a nX.")
-        k_inicio = max(nX, nZ) - 1
-        k_fim = K - 2       # Garante que k + 1 não ultrapasse K - 1
+    k0, k1 = max(w, nI, mO) - 1, K - 1 - nO
+    if k0 > k1:
+        raise ValueError(f'Série temporal muito curta ({K} amostras) para w={w}, nI={nI}, nO={nO}, mO={mO}.')
+    kX = np.arange(k0, k1 + 1)
+
+    DSI = WindowDSI(pd.DataFrame(RS), w).to_numpy()            # linha r = instante r + w - 1
+    X = DSI[kX - (w - 1)]
+    Y = np.array([ST[k - nI + 1 : k + 1] for k in kX])
+    Z = np.array([ST[k - mO + 1 : k + nO + 1] for k in kX])
+    return X, Y, Z, kX
+
+def ParseParams(params):
+    '''
+    Normaliza a lista de parâmetros do modelo para [m, nI, nR, nO, mO, N1, N2, N3, τ, act]
+    (nO = nº de valores futuros de Z_k, mO = nº de valores passados de Z_k, incluindo h_k).
+    Aceita também o formato antigo de 11 itens [m, nI, nR, nO, mO, N1, N2, N3, τ, mode, act]:
+        mode = 'ahead'/1 -> nO e mO mantidos;
+        mode = 'past'/0  -> Z_k = [h_{k-nO+2}, ..., h_{k+1}] equivale a nO = 1 futuro e mO = nO - 1 passados.
+    nR em texto (ex.: '[70]', como nas tabelas Optimization.csv) é convertido em lista.
+    '''
+    import ast
+    p = list(params)
+    if len(p) == 11:
+        m, nI, nR, nO, mO, N1, N2, N3, tau, mode, act = p
+        if mode in ('past', 0): nO, mO = 1, int(nO) - 1
+    elif len(p) == 10:
+        m, nI, nR, nO, mO, N1, N2, N3, tau, act = p
     else:
-        raise ValueError("Modo inválido. Escolha 'past' ou 'ahead'.")
-
-    # Verifica se há dados suficientes para gerar ao menos uma janela
-    if k_inicio > k_fim:
-        raise ValueError(f"Série temporal muito curta ({K} amostras) para os parâmetros fornecidos.")
-
-    Xs, Ys, Zs = [], [], []
-
-    # 2. Construção e Alinhamento das Janelas
-    for k in range(k_inicio, k_fim + 1):
-        # Input X_k: dados de ST no intervalo [k - nX + 1, k]
-        X_k = ST[k - nX + 1 : k + 1]
-        
-        # Output Y_k
-        if mode == 'past':
-            # Y_k vai de (k - nY + 2) até (k + 1) inclusive
-            Y_k = ST[k - nY + 2 : k + 2]
-        else:  # mode == 'ahead'
-            # Se mY > 0: pega de [k - mY + 1] até [k + nY]
-            # Se mY = 0: cai no comportamento original [k + 1] até [k + nY]
-            Y_k = ST[k - mY + 1 : k + 1 + nY]
-
-        # Input Z_k para Clusterização
-        if nZ == 1:
-            Z_k = RS[k]
-        else:
-            Z_k = RS[k - nZ + 1 : k + 1]
-
-        Xs.append(X_k)
-        Ys.append(Y_k)
-        Zs.append(Z_k.flatten())
-
-    # Preservando o retorno original (retirando a última amostra como no seu código)
-    return np.array(Zs)[:-1], np.array(Xs)[:-1], np.array(Ys)[:-1]
+        raise ValueError('params deve ter 10 itens [m,nI,nR,nO,mO,N1,N2,N3,τ,act] (ou 11 no formato antigo, com mode).')
+    if isinstance(nR, str): nR = ast.literal_eval(nR)
+    nR = [int(n) for n in np.atleast_1d(nR)]
+    return [float(m), int(nI), nR, int(nO), int(mO), N1, N2, N3, tau, int(act)]

@@ -12,27 +12,28 @@ def RunTag(filename=None, feedback=None, wtaG=None, wtaP=None):
     wtaP = WTAP if wtaP is None else wtaP
     return f'{filename}_{feedback}_G{int(wtaG)}P{int(wtaP)}'
 
-def RefEoL(sig, eol, nI, mO, mode):
+def RefEoL(sig, eol, kX, strict=False):
     '''
-    Referência da RUL real baseada no limiar de EoL (eq. 12): RUL_real = iEoL - k_dado.
-    O AutoCloud calcula rulR = ref - k, com k = j + 2 na iteração j, e o PrepareData
-    alinha a iteração j à amostra k_dado = k0 + j. Logo ref = iEoL - k0 + 2.
-    Retorna ref e J, o número de iterações com RUL real >= 1.
+    Referência da RUL real baseada no limiar de EoL (eq. 12): RUL_real(k) = iEoL - k,
+    com iEoL = primeira amostra em que o HI <= eol e k o instante de cada amostra (kX, 4ª saída de PrepareData).
+    O AutoCloud calcula rulR = ref - self.k, com self.k = j + 2 na iteração j; logo ref = iEoL - kX[0] + 2.
+    Retorna:
+        ref : referência passada ao AutoCloud
+        J   : nº de iterações com RUL real >= 1 (instantes k < iEoL)
+        L   : limite da RUL prevista (lim), igual ao nº de amostras a partir de kX[0]
+    Se o fluxo de amostras termina antes de iEoL - 1 (nO grande): strict=True -> ValueError; senão, aviso.
     '''
     sig = np.asarray(sig, dtype=float)
+    kX = np.asarray(kX, dtype=int)
     if not np.any(sig <= eol): raise ValueError('O HI nunca atinge o limiar de EoL.')
     iEoL = int(np.argmax(sig <= eol))
-    k0 = (max(nI, 1, mO) if mode in ('ahead', 1) else max(nI, 1)) - 1
-    return iEoL - k0 + 2, iEoL - k0, len(sig)-nI+1
-
-def nOMax(sig, eol):
-    '''
-    Maior nO (modo 'ahead') para o qual o fluxo do PrepareData alcança a última amostra antes do EoL.
-    A última janela fica em k = K - nO - 2 (o PrepareData descarta a última); exigir k >= iEoL - 1
-    dá nO <= K - iEoL - 1, independente de nI e mO. No modo 'past' o fluxo sempre alcança o EoL.
-    '''
-    sig = np.asarray(sig, dtype=float)
-    return len(sig) - int(np.argmax(sig <= eol)) - 1
+    if kX[0] >= iEoL: raise ValueError(f'A primeira amostra (k = {kX[0]}) já está no EoL (iEoL = {iEoL}).')
+    if kX[-1] < iEoL - 1:
+        msg = (f'O fluxo termina em k = {kX[-1]}, antes do EoL (iEoL = {iEoL}): '
+               f'a última RUL real avaliada é {iEoL - kX[-1]} (reduza nO).')
+        if strict: raise ValueError(msg)
+        print('Aviso: ' + msg)
+    return iEoL - int(kX[0]) + 2, int(np.sum(kX < iEoL)), len(sig) - int(kX[0])
 
 class AutoCloud:
 	'''
@@ -51,7 +52,7 @@ class AutoCloud:
 		       (modo offline/oráculo, para análise); Range = lim. Custo: n_rho previsões completas por passo.
 	'''
 	def __init__(self,m,nI=1,nR=[1],nO=1,ηS=[0.1,0.1,0.1],
-			  tau=1,eol=0,ref=0,mode='past',act='tanh',st=0,end=0,
+			  tau=1,eol=0,ref=0,act='tanh',st=0,end=0,
 			  wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0,
 			  rho=1e-3,lam=1.0,intr_state='reset',
 			  rho_dyn=True,rho_eta=0.2,rho_T=0.3,rho_beta=0.0,rho_min=1e-3,rho_max=10.0,sp_range=1.0,
@@ -88,15 +89,17 @@ class AutoCloud:
 		self._pending = None                # intervalos dos candidatos aguardando o valor real
 		self.vSum = 0
 		self.st = st
-		self.mode = mode
 		self.act = act
 		self.end = end
+		# Janelas do HI (mesmas de PrepareData): Y_k com nI valores; Z_k com mO passados (incluindo h_k) e nO futuros.
+		# Saída das RNNs: nOut = mO + nO valores; a predição um passo à frente h_{k+1} é a coordenada mO.
 		self.nI = nI
 		self.nR = nR
 		self.nO = nO
+		self.mO = mO
+		self.nOut = nO + mO
 		self.sd = 42
 		self.feedback = feedback
-		self.mO = mO
 
 		if ηS[0] < 1:
 			self.N1 = ηS[0]
@@ -116,8 +119,6 @@ class AutoCloud:
 		self.tau = tau
 		self.eol = eol
 		self.store = store
-		self.y = None
-		self.g = 1
 		self.gCreated = 0
 		self.c= np.array([])
 		self.alfa= np.array([0.0],dtype=float)
@@ -131,7 +132,6 @@ class AutoCloud:
 		self.cloud_activation = []
 		self.aux = np.array([])
 		self.DSIs = [np.array([]) for i in range(nI)]
-		self.OffineGrnls = None
 
 		if self.act == 0:
 			self.act = 'tanh'
@@ -140,11 +140,6 @@ class AutoCloud:
 		elif self.act == 2:
 			self.act = 'sigmoid'
 
-		if self.mode == 0:
-			self.mode = 'past'
-		elif self.mode == 1:
-			self.mode = 'ahead'
-			
 		self.eolX = 0
 		self.HI = np.array([])
 		self.DSI = np.array([])
@@ -155,7 +150,6 @@ class AutoCloud:
 		self.t = np.array([])
 		self.rulL = np.array([])
 		self.rulP = np.array([])
-		self.rulP2 = np.array([])
 		self.rulU = np.array([])
 		self.rulR = np.array([])
 		# 1 quando a trajetória (inferior, pontual, superior) não atinge o EoL e a RUL é truncada em lim
@@ -163,19 +157,13 @@ class AutoCloud:
 		self.rulCapP = np.array([], dtype=int)
 		self.rulCapU = np.array([], dtype=int)
 		self.ref = ref
-		self.rulR2 = np.array([])
 		self.rulR_Train = np.array([])
 		self.lim = 160
-		self.yP = np.array([])
-		self.yR = np.array([])
 
 		self.hiR = np.array([])
 		self.hiP = np.array([])
 		self.hiL = np.array([])
 		self.hiU = np.array([])
-
-		self.wMape_hi = 0
-		self.wMape_rul = 0
 
 		self.wape_RUL_hist = np.array([])
 		self.wape_RUL = 0
@@ -197,7 +185,6 @@ class AutoCloud:
 		self.wtaG = wtaG
 		self.wtaP = wtaP
 		self.xR = 0
-		self.xF = 0
 		self.Dmax = 0
 
 		if rls_mode == 'log':
@@ -429,8 +416,8 @@ class AutoCloud:
 	
 	def CreateCloud(self,x,t,store=False):
 		self.gCreated = self.gCreated + 1
-		cloud = DataCloud(x,(self.k-1),self.gCreated,self.rho,self.m,self.nI,self.nR,self.nO,
-					[self.N1,self.N2,self.N3],self.tau,self.sd,self.mode, self.act,feedback=self.feedback,nPast=self.mO)
+		cloud = DataCloud(x,(self.k-1),self.gCreated,self.rho,self.m,nI=self.nI,nR=self.nR,nO=self.nOut,
+					ηS=[self.N1,self.N2,self.N3],tau=self.tau,sd=self.sd,act=self.act,feedback=self.feedback,nPast=self.mO)
 		if store:
 			cloud.t.append(self.k)
 		self.c = np.append(self.c,cloud)
@@ -448,6 +435,9 @@ class AutoCloud:
 		n = self.c[0].rnn.n
 		self.HI = np.append(self.HI,z[n])
 		self.hiR = np.append(self.hiR,z[n])
+		# WAPE do HI com o valor real do mesmo passo (hiP_k vs hiR_k): calculado aqui, após o valor real ser conhecido
+		if self.k > 2:
+			self.WAPE_HI()
 		# Valor real do passo conhecido: atualiza o rho que será usado na próxima predição
 		#if self._pending is not None:
 		#	self.UpdateRho(z[n] if self._pending[0] == 'HI' else self._pending[3])
@@ -744,8 +734,9 @@ class AutoCloud:
 			self.RULInterv2(X,lim,show)
 		else:
 			raise ValueError("Modo inválido. Escolha 'single' ou 'interval'.")
+		# WAPE da RUL: rulR e rulP do mesmo passo já disponíveis; o WAPE do HI é calculado em Adapt
 		if self.k >2:
-			self.teda_WAPE()
+			self.WAPE_RUL()
 
 	def AddRUL(self):
 		for cloud in self.cloud_activation:
@@ -796,8 +787,8 @@ class AutoCloud:
 					variance = ((nI - 1) * varianceI + (nJ - 1) * varianceJ)/(nI + nJ - 2)
 					tipicality = ((nI*tipicalityI)+(nJ*tipicalityJ))/(nI + nJ)
 
-					newCloud = DataCloud(X,self.k-1,self.gCreated,self.rho,self.m,self.nI,self.nR,self.nO,
-									[self.N1,self.N2,self.N3],self.tau,self.sd,self.mode, self.act,feedback=self.feedback,nPast=self.mO)
+					newCloud = DataCloud(X,(self.k-1),self.gCreated,self.rho,self.m,nI=self.nI,nR=self.nR,nO=self.nOut,
+									ηS=[self.N1,self.N2,self.N3],tau=self.tau,sd=self.sd,act=self.act,feedback=self.feedback,nPast=self.mO)
 					for id in trackI:
 						newCloud.track.append(id)
 					for id in trackJ:
@@ -899,8 +890,8 @@ class AutoCloud:
 			self.xR = X
 			self.CreateCloud(X,self.k,self.store)
 			self.alfa = np.ones(1)
-			self.gm = DataCloud(X,(self.k-1),'GM',self.rho,self.m,self.nI,self.nR,self.nO,
-					[self.N1,self.N2,self.N3],self.tau,self.sd,self.mode, self.act,feedback=self.feedback,nPast=self.mO)
+			self.gm = DataCloud(X,(self.k-1),'GM',self.rho,self.m,nI=self.nI,nR=self.nR,nO=self.nOut,
+					ηS=[self.N1,self.N2,self.N3],tau=self.tau,sd=self.sd,act=self.act,feedback=self.feedback,nPast=self.mO)
 
 		elif self.k==2:
 			self.c[0].AddDataClaud(X,self.k,self.store)

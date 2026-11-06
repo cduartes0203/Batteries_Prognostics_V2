@@ -1,10 +1,12 @@
 import numpy as np
 import math
-from Testing.eRNN_R3 import *
+from Testing.eRNN_R4 import *     # idêntico ao eRNN_R3 até a remoção do 'mode'; AutoCloud_V4_5 também usa o R4
 
 class DataCloud:
 	N=0
-	def __init__(self,x,h,ID,rho,m,nI=1,nR=1,nO=1,ηS=[1,1,1],tau=1,sd=42,mode='past',act = 'tanh',feedback='symmetric',nPast=0):
+	def __init__(self,x,h,ID,rho,m,nI=1,nR=1,nO=1,ηS=[1,1,1],tau=1,sd=42,mode=None,act = 'tanh',feedback='symmetric',nPast=0):
+		# nO: comprimento da saída Z_k (nPast passados + futuros); h_{k+1} = saída[nPast].
+		# mode: argumento legado (None = não usado), mantido só para versões antigas do AutoCloud que o passam por posição.
 		self.ID = ID
 		self.track = [ID]
 		self.merged = False

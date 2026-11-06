@@ -17,7 +17,8 @@ def Optimize(
         n_study=None,timeout=None,n_trials=None,
         patience=None,
         mS =None,nIS=None,nLS=None,nRS=None,nOS =None,mOS=None,
-        N1S=None,N2S=None,N3S=None,τS =None,mdS=None,actS=None):
+        N1S=None,N2S=None,N3S=None,τS =None,actS=None,W=1):
+    # W: janela do DSI em X_k (PrepareData). Z_k = mO passados (incluindo h_k) + nO futuros; h_{k+1} = Z_k[mO]
 
     '''
         OptSampler modes available: None, Auto, GP, NSGAII, Random, TPE
@@ -63,12 +64,14 @@ def Optimize(
     if N2S is None: N2S = [1,9]
     if N3S is None: N3S = [1,9]
     if τS  is None: τS  = [1,25]
-    if mdS is None: mdS = [0,1]
     if actS is None: actS = [0,1,2]
 
-    if SingleObj: names = ['MAPE_RUL*MAPE_HI', 'm', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3','TAU','past/ahead','activation']
-    else: names = ['MAPE_RUL','MAPE_HI', 'm', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3','TAU','past/ahead','activation']
-    study_dir, out_path = df_ParamsTable(names,FileName)
+    if SingleObj: names = ['MAPE_RUL*MAPE_HI', 'm', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3','TAU','activation']
+    else: names = ['MAPE_RUL','MAPE_HI', 'm', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3','TAU','activation']
+    # pasta escolhida pelo tipo de objetivo (df_ParamsTable decide pelo nº de colunas, que mudou sem a coluna 'past/ahead')
+    study_dir = os.path.normpath(f'Optimization/{FileName}/{"mono" if SingleObj else "multi"}/')
+    os.makedirs(study_dir, exist_ok=True)
+    out_path = os.path.join(study_dir, 'Optimization.csv')
 
     for i in range(n_study):
         print('iteration:',i+1)
@@ -82,25 +85,25 @@ def Optimize(
             N2 = trial.suggest_int('N2', N2S[0], N2S[1])
             N3 = trial.suggest_int('N3', N3S[0], N3S[1])
             τ = trial.suggest_int('τ', τS[0], τS[1])
-            mode = trial.suggest_int('mode', mdS[0], mdS[1])  
             act = trial.suggest_int('act', actS[0], actS[1])  
 
-            if mode == 'past' or mode == 0:
-                mO = trial.suggest_int('mO', 0, 0) 
-                if nO > nI: raise TrialPruned()
-
-            elif mode == 'ahead' or mode == 1:
-                mO = trial.suggest_int('mO', mOS[0], mOS[1]) 
-                if   nI > 20 or nO > 20: raise TrialPruned()
-                elif mO > nI: raise TrialPruned()
+            mO = trial.suggest_int('mO', mOS[0], mOS[1])     # nº de valores passados de Z_k (incluindo h_k)
+            # mesmos limites de antes: nO = 1 corresponde ao antigo modo 'past' (sem limite de 20)
+            if mO > nI or (nO > 1 and (nI > 20 or nO > 20)): raise TrialPruned()
+            # OLD.AutoCloud (DRTLO_GD_R2) só seleciona h_{k+1} na 1ª coordenada da saída ('ahead': mO = 0)
+            # ou na última ('past': nO = 1 valor futuro); as demais combinações não são suportadas por esse módulo
+            if mO == 0: mode = 'ahead'
+            elif nO == 1: mode = 'past'
+            else: raise TrialPruned()
                 
-            X, Y, Z = PrepareData(RS, HI, nI, nO, mO, 1, mode)
+            X, Y, Z, kX = PrepareData(RS, HI, W, nI, nO, mO)
+            k0 = int(kX[0])          # 1º instante: ref = len(sig) - k0 (RUL até o fim da série, como antes) e lim = len(sig) - k0
             
-            teda=AutoCloud(m=m,nI=len(Y[0]),nR=nR,nO=nO+mO,ηS=[N1,N2,N3],mode=mode,act=act,
-                           tau=τ,rho=0.0,eol=0.3,ref=len(sig)-nI+1,wtaG=True,wtaP=True) 
+            teda=AutoCloud(m=m,nI=nI,nR=nR,nO=nO+mO,ηS=[N1,N2,N3],mode=mode,act=act,
+                           tau=τ,rho=0.0,eol=0.3,ref=len(sig)-k0,wtaG=True,wtaP=True) 
             for j,_ in enumerate(X[:]):
                 teda.run(X[j])
-                teda.RUL_Prediction(Y[j],mode='single',lim=len(sig)-nI+1)
+                teda.RUL_Prediction(Y[j],mode='single',lim=len(sig)-k0)
                 teda.Adapt(Y[j],Z[j])
                 #teda.WAPE_HI2(Y[j],Z[j])
 
@@ -130,7 +133,7 @@ def Optimize(
             for trial in trials:
                 p = trial.params
                 nR_list = [p[f'nR_layer_{l}'] for l in range(p['n_layers'])]
-                row = [trial.values[0],p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['mode'],p['act']]   
+                row = [trial.values[0],p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['act']]   
                 vec.append(row)
             df2 = pd.DataFrame(vec,columns=names)
             df2 = df2.sort_values(by=df2.columns[0], ascending=False)[-5:]
@@ -139,14 +142,15 @@ def Optimize(
             for trial in study.best_trials:
                 p = trial.params
                 nR_list = [p[f'nR_layer_{l}'] for l in range(p['n_layers'])]
-                row = [trial.values[0],trial.values[1],p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['mode'],p['act']]
+                row = [trial.values[0],trial.values[1],p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['act']]
                 vec.append(row)
             df2 = pd.DataFrame(vec,columns=names)
         
     if os.path.isfile(out_path) and out_path.startswith(study_dir):
         df1 = pd.read_csv(out_path)
         df_stdy = pd.concat([df1, df2], ignore_index=True)
-    
+    else: df_stdy = df2
+
     df_stdy = df_stdy.drop_duplicates()
     df_stdy.to_csv(out_path, index=False)
 
