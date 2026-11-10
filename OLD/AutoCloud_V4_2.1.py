@@ -1,14 +1,46 @@
 import numpy as np
 import math
 from Testing.eRNN_R3 import *
-from OLD.DataCloud_V4 import *
+from Functions.DataCloud_V4 import *
+from Functions.RLS import *
+
 
 class AutoCloud:
+	'''
+	rho dinâmico (granularidade do intervalo de predição), ajustado a cada iteração pelo Princípio da
+	Granularidade Justificável em modo online:
+		- rho começa em 0; a predição do passo k usa o rho escolhido com os passos anteriores (causal);
+		- para cada candidato da grade rho_grid (log-espaçada entre rho_min e rho_max, n_rho valores),
+		  o intervalo do passo k é calculado e, quando o valor real é conhecido, acumulam-se cobertura e
+		  especificidade com fator de esquecimento lam (1.0 = todos os passos com o mesmo peso);
+		- V(rho) = média(cov) * média(sp) (abordagem do artigo); rho_{k+1} = argmax V (empate: menor rho);
+		  se nenhum candidato cobriu ainda (V = 0), rho é mantido;
+		- V é o valor máximo do passo e Vsum o acumulado de V.
+	rho_target:
+		'HI' : intervalo do HI um passo à frente; valor real conhecido no passo seguinte (causal); Range = 1.
+		'RUL': intervalo da RUL; usa a RUL real (ref - k), que depende do EoL conhecido só ao fim da vida
+		       (modo offline/oráculo, para análise); Range = lim. Custo: n_rho previsões completas por passo.
+	'''
 	def __init__(self,m,nI=1,nR=[1],nO=1,ηS=[0.1,0.1,0.1],
 			  tau=1,eol=0,ref=0,mode='past',act='tanh',st=0,end=0,
-			  rho=0.003,wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0):
-		
-		self.rho = rho
+			  wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0,
+			  rho_target='HI',rho_min=1e-6,rho_max=1e-1,n_rho=30,lam=1.0):
+
+		if rho_target not in ('HI', 'RUL'):
+			raise ValueError("rho_target deve ser 'HI' ou 'RUL'.")
+		self.rho = 0.0
+		self.rho_target = rho_target
+		self.rho_grid = np.geomspace(rho_min, rho_max, n_rho)
+		self.lam = lam
+		self.S_w = 0.0                      # soma (com esquecimento) dos pesos dos passos
+		self.S_cov = np.zeros(n_rho)        # soma (com esquecimento) da cobertura por candidato
+		self.S_sp = np.zeros(n_rho)         # soma (com esquecimento) da especificidade por candidato
+		self.V_grid = np.zeros(n_rho)       # V(rho) de cada candidato na última atualização
+		self.Vsum = 0.0
+		self.rho_hist = np.array([])        # rho usado na predição de cada passo
+		self.V_hist = np.array([])          # V após cada atualização
+		self.Vsum_hist = np.array([])
+		self._pending = None                # intervalos dos candidatos aguardando o valor real
 		self.vSum = 0
 		self.st = st
 		self.mode = mode
@@ -123,13 +155,13 @@ class AutoCloud:
 		self.xF = 0
 		self.Dmax = 0
 
+		self.rls = RLS_LogarithmicRegressor(0.9,1e6)
+
 		self.sp = 0
 		self.cov = 0
 		self.sp_hist = np.array([])
 		self.cov_hist = np.array([])
 		self.V = 0
-		self.Vpaper = 0
-		self.Vused = 0
 
 		self.dim = None
 		self.gm = None
@@ -158,9 +190,9 @@ class AutoCloud:
 
 		self.sp = sp.mean()
 		self.cov = cov.mean()
-		self.Vpaper = cov.mean() * sp.mean()
-		self.Vused = (cov * sp).mean() 
-	
+		#self.V = cov.mean() * sp.mean()
+		self.V = (cov * sp).mean() 
+
 	def RUL_Granularity(self):
 		rulR,rulL,rulP,rulU = self.rulR,self.rulL,self.rulP,self.rulU
 		Range = np.max(rulR) - np.min(rulR)
@@ -176,8 +208,27 @@ class AutoCloud:
 
 		self.sp = sp.mean()
 		self.cov = cov.mean()
-		self.Vpaper = cov.mean() * sp.mean()
-		self.Vused = (cov * sp).mean() 
+		#self.V = cov.mean() * sp.mean()
+		self.V = (cov * sp).mean() 
+
+	def UpdateRho(self, truth):
+		# Atualização online do rho: acumula cov/sp de cada candidato com o valor real e escolhe o melhor V
+		target, L, U = self._pending[:3]
+		self._pending = None
+		Range = 1.0 if target == 'HI' else float(self.lim)
+		cov = ((L <= truth) & (truth <= U)).astype(float)
+		sp = np.maximum(0.0, 1.0 - (U - L) / Range)
+		self.S_w = self.lam * self.S_w + 1.0
+		self.S_cov = self.lam * self.S_cov + cov
+		self.S_sp = self.lam * self.S_sp + sp
+		self.V_grid = (self.S_cov / self.S_w) * (self.S_sp / self.S_w)
+		i = int(np.argmax(self.V_grid))          # grade crescente: em empate fica o menor rho
+		if self.V_grid[i] > 0:
+			self.rho = float(self.rho_grid[i])
+		self.V = float(self.V_grid[i])
+		self.Vsum += self.V
+		self.V_hist = np.append(self.V_hist, self.V)
+		self.Vsum_hist = np.append(self.Vsum_hist, self.Vsum)
 
 	def WAPE_RUL(self):
 		yR, yP, t = self.rulR[-1], self.rulP[-1], self.k**2
@@ -290,6 +341,9 @@ class AutoCloud:
 		n = self.c[0].rnn.n
 		self.HI = np.append(self.HI,z[n])
 		self.hiR = np.append(self.hiR,z[n])
+		# Valor real do passo conhecido: atualiza o rho que será usado na próxima predição
+		if self._pending is not None:
+			self.UpdateRho(z[n] if self._pending[0] == 'HI' else self._pending[3])
 		for i,cloud in enumerate(self.c):
 			if self.alfa[i] > 0:
 				cloud.rnn.fit(y,z)
@@ -410,34 +464,71 @@ class AutoCloud:
 	def RULInterv(self,X,lim=None,show=False):
 		if lim==None:
 			lim = 160
+		self.lim = lim
+		if self.wtaG==False and self.wtaP==True:
+			self.alfa = np.where(self.alfa<np.max(self.alfa),0,self.alfa)
+		ws = self.alfa/np.sum(self.alfa)
+
+		# Predição do passo com o rho atual (escolhido com os passos anteriores)
+		Ruls, Capped, (yL, yP, yU) = self.ForecastInterval(X, self.rho, lim, ws)
+		self.rho_hist = np.append(self.rho_hist, self.rho)
+		self.hiP = np.append(self.hiP,yP)
+		self.hiL = np.append(self.hiL,yL)
+		self.hiU = np.append(self.hiU,yU)
+
+		# Intervalos dos candidatos de rho para este passo (avaliados quando o valor real for conhecido)
+		if self.rho_target == 'HI':
+			first = np.array([self.ForecastInterval(X, r, lim, ws, first_only=True)[2] for r in self.rho_grid])
+			self._pending = ('HI', first[:, 0], first[:, 2])
+		else:
+			ruls = np.array([self.ForecastInterval(X, r, lim, ws)[0] for r in self.rho_grid])
+			self._pending = ('RUL', ruls[:, 0], ruls[:, 2], self.ref - self.k)
+
+		# Sem ajuste de Ruls[2]: com aritmética intervalar exata (eRNN_GD_R3) yL <= yP <= yU em todo o horizonte,
+		# logo rulL <= rulP <= rulU por construção (HI decrescente: a trajetória inferior atinge o EoL primeiro)
+		self.t = np.append(self.t,self.k - 2)
+		self.rulR = np.append(self.rulR,self.ref - self.k)
+		self.rulP = np.append(self.rulP,Ruls[1])
+		self.rulL = np.append(self.rulL,Ruls[0])
+		self.rulU = np.append(self.rulU,Ruls[2])
+		self.rulCapL = np.append(self.rulCapL,Capped[0])
+		self.rulCapP = np.append(self.rulCapP,Capped[1])
+		self.rulCapU = np.append(self.rulCapU,Capped[2])
+
+		for i,cloud in enumerate(self.c):
+			if self.alfa[i] > 0:
+				cloud.t2.append(self.k-2)
+				cloud.rulR = np.append(cloud.rulR,self.ref - self.k)
+				cloud.rulP = np.append(cloud.rulP,Ruls[1])
+				cloud.rulL.append(Ruls[0])
+				cloud.rulM.append(Ruls[1])
+				cloud.rulU.append(Ruls[2])
+
+	def ForecastInterval(self, X, rho, lim, ws, first_only=False):
+		'''
+		Previsão recursiva (pontual e intervalar) com granularidade rho, sem efeitos colaterais.
+		Retorna Ruls [L, P, U], Capped [L, P, U] (1 = truncada em lim) e (yL, yP, yU) do primeiro passo.
+		Todas as trajetórias partem do estado atual h(t) de cada grânulo (garante yL <= yP <= yU).
+		'''
+		for cloud in self.c:
+			cloud.rnn.Restore()
 		xP,xL,xU = X.copy(),X.copy(),X.copy()
-		predict = True
 		Ruls = [0 for i in range(3)]
 		CheckRuls = [True for i in range(3)]
 		Capped = [0 for i in range(3)]
-		PredVals = np.zeros(3)
-		cont = True
+		first = None
 
-		# Trajetórias pontual e intervalares partem do mesmo estado atual h(t) em todos os grânulos
-		# (garante yL <= yP <= yU mesmo que outra chamada tenha avançado hP2 entre os passos)
-		for cloud in self.c:
-			cloud.rnn.Restore()
-
-		while predict:
-			if self.wtaG==False and self.wtaP==True:
-				self.alfa = np.where(self.alfa<np.max(self.alfa),0,self.alfa)
-			ws = self.alfa/np.sum(self.alfa)
-
-			Pred = [w*c.rnn.PredictIntr(xP,xL,xU,self.rho,False) for w,c in zip(ws,self.c)]
-
+		while True:
+			Pred = [w*c.rnn.PredictIntr(xP,xL,xU,rho,False) for w,c in zip(ws,self.c)]
 			PredVals = sum(Pred)
+			if rho == 0:
+				# Grânulo degenerado: limites iguais ao valor pontual (evita diferenças de arredondamento ~1e-16)
+				PredVals = np.array([PredVals[1], PredVals[1], PredVals[1]])
 			yL,yP,yU = PredVals
-
-			if cont:
-				self.hiP = np.append(self.hiP,yP)
-				self.hiL = np.append(self.hiL,yL)
-				self.hiU = np.append(self.hiU,yU)
-				cont = False
+			if first is None:
+				first = (yL, yP, yU)
+				if first_only:
+					break
 
 			xP = np.delete(np.append(xP,yP),0)
 			xL = np.delete(np.append(xL,yL),0)
@@ -461,26 +552,7 @@ class AutoCloud:
 
 		for cloud in self.c:
 			cloud.rnn.Restore()
-
-		# Sem ajuste de Ruls[2]: com aritmética intervalar exata (eRNN_GD_R3) yL <= yP <= yU em todo o horizonte,
-		# logo rulL <= rulP <= rulU por construção (HI decrescente: a trajetória inferior atinge o EoL primeiro)
-		self.t = np.append(self.t,self.k - 2)
-		self.rulR = np.append(self.rulR,self.ref - self.k)
-		self.rulP = np.append(self.rulP,Ruls[1])
-		self.rulL = np.append(self.rulL,Ruls[0])
-		self.rulU = np.append(self.rulU,Ruls[2])
-		self.rulCapL = np.append(self.rulCapL,Capped[0])
-		self.rulCapP = np.append(self.rulCapP,Capped[1])
-		self.rulCapU = np.append(self.rulCapU,Capped[2])
-
-		for i,cloud in enumerate(self.c):
-			if self.alfa[i] > 0:
-				cloud.t2.append(self.k-2)
-				cloud.rulR = np.append(cloud.rulR,self.ref - self.k)
-				cloud.rulP = np.append(cloud.rulP,Ruls[1])
-				cloud.rulL.append(Ruls[0])
-				cloud.rulM.append(Ruls[1])
-				cloud.rulU.append(Ruls[2])
+		return Ruls, Capped, first
 
 	def RUL_Prediction(self,X,mode='single',lim=None,show=False):
 		if mode=='single':

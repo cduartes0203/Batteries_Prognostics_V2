@@ -15,7 +15,7 @@ if not "%~1"=="" (
 set "INST=principal"
 set "SAMP=random"
 set "PRUNE=0"
-set "NTR=3000"
+set "NTR=5000"
 set "MS=1.5 4.5"
 set "NLS=3 4"
 set "NOS=1 9"

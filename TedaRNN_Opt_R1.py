@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(description='Otimização do modelo AutoCloud_V
 parser.add_argument("--instancia", default="principal", help="sufixo do nome da pasta de resultados (padrão: principal)")
 parser.add_argument("--sampler", default="random", type=str.lower, choices=SAMPLERS, help="OptSampler (padrão: random)")
 parser.add_argument("--prune", default=0, type=int, choices=[0, 1], help="OptPrune: 1 = poda de trials ruins (padrão: 0)")
-parser.add_argument("--n_trials", default=3000, type=int, help="nº de trials novos por sessão e por nº de camadas (padrão: 3000)")
+parser.add_argument("--n_trials", default=5000, type=int, help="nº de trials novos por sessão e por nº de camadas (padrão: 5000)")
 parser.add_argument("--mS", nargs=2, type=float, default=[1.5, 4.5], metavar=('MIN', 'MAX'), help="faixa de m (padrão: 1.45 4.5)")
 parser.add_argument("--nLS", nargs=2, type=int, default=[3, 4], metavar=('MIN', 'MAX'), help="faixa do nº de camadas (padrão: 3 4)")
 parser.add_argument("--nOS", nargs=2, type=int, default=[1, 9], metavar=('MIN', 'MAX'), help="faixa de nO, valores futuros de Z_k (padrão: 1 9)")
@@ -30,7 +30,7 @@ args = parser.parse_args()
 def check(name, r, low):
     if not low <= r[0] <= r[1]:
         parser.error(f'{name}: requer {low} <= MIN <= MAX (recebido {r[0]} {r[1]})')
-check('mS', args.mS, 0.25)       # m é sugerido em passos de 0.25
+check('mS', args.mS, 0.125)       # m é sugerido em passos de 0.25
 check('nLS', args.nLS, 1)
 check('nOS', args.nOS, 1)
 check('mOS', args.mOS, 0)

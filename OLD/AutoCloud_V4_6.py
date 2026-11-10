@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from Testing.eRNN_R4 import *
-from OLD.DataCloud_V4 import *
+from Functions.DataCloud_V4 import *
 from Functions.RLS import *
 import copy
 
@@ -27,7 +27,8 @@ class AutoCloud:
 			  wtaG=True,wtaP=True,store=True,feedback='symmetric',mO=0,
 			  rho=1e-3,lam=1.0,intr_state='reset',
 			  rho_dyn=True,rho_eta=0.2,rho_T=0.3,rho_beta=0.0,rho_min=1e-3,rho_max=10.0,sp_range=1.0,
-			  nf_rls = 3, ff_rls=1, dt_rls = 1e3
+			  rho_update='occ',occ_alpha=0.1,occ_gamma=0.05,occ_KI=0.0,occ_Csat=None,occ_win=None,
+			  rls_model='log', nf_rls = 3, ff_rls=0.9, dt_rls = 1e6
 			  ):
 
 		# rho: múltiplo do erro estimado do HI no intervalo de RULInterv2 (protocolo 3); valor inicial se rho_dyn=True
@@ -45,6 +46,29 @@ class AutoCloud:
 		self.ehat_last = None               # erro estimado usado no intervalo do HI do passo atual
 		self.rho_used = np.array([])        # rho usado em cada passo
 		self.rho_grad_hist = np.array([])
+		# rho dinâmico (sugestão 2): controle online da cobertura (ACI, Gibbs & Candès 2021; conformal PID,
+		# Angelopoulos, Candès & Tibshirani 2023). Conhecido o HI real do passo k, err_k = 1 - cov_k (1 se o HI real
+		# ficou fora de [hiL_k, hiU_k], i.e. s_k = |e_k|/e_est_k > rho_k) e:
+		#   q_{k+1}   = q_k + gamma_k*(err_k - alpha)                         (P: rastreamento do quantil 1-alpha de s)
+		#   S_k       = sum_{i<=k} (err_i - alpha)                            (erro de cobertura acumulado)
+		#   rho_{k+1} = clip(q_{k+1} + I_k),  I_k = KI*S_k  ou  KI*Csat*tanh(S_k/Csat)  (I: termo integral opcional, saturado)
+		# Cada falha aumenta rho em gamma*(1-alpha); cada acerto reduz em gamma*alpha. A cobertura de longo prazo
+		# converge para 1-alpha para qualquer sequência (|cobertura - (1-alpha)| <= (rho_max - rho_min + gamma)/(gamma*K)).
+		# occ_win: se inteiro, gamma_k = gamma * max(s_{k-win+1..k}) (passo na escala dos escores recentes, como no
+		# conformal PID); None: gamma fixo (na escala de rho). Causal: rho_{k+1} usa apenas passos até k.
+		# rho_update: 'occ' (sugestão 2) ou 'grad' (sugestão 3, UpdateRhoGrad)
+		if rho_update not in ('occ', 'grad'):
+			raise ValueError("rho_update deve ser 'occ' ou 'grad'.")
+		if not 0.0 < occ_alpha < 1.0:
+			raise ValueError('occ_alpha deve estar em (0, 1).')
+		self.rho_update = rho_update
+		self.occ_alpha, self.occ_gamma, self.occ_KI = occ_alpha, occ_gamma, occ_KI
+		self.occ_Csat, self.occ_win = occ_Csat, occ_win
+		self._occ_q = float(rho)            # parte P (quantil rastreado)
+		self._occ_S = 0.0                   # erro de cobertura acumulado sum(err - alpha)
+		self.occ_err_hist = np.array([])    # err_k = 1 - cov_k
+		self.occ_score_hist = np.array([])  # s_k = |e_k| / e_est_k
+		self.occ_I_hist = np.array([])      # termo integral I_k
 		# Estado recorrente intervalar em RULInterv2: 'carry' (propagado entre os passos da previsão, limites garantidos
 		# para toda a sequência de janelas intervalares) ou 'reset' (reiniciado no estado pontual a cada passo: o intervalo
 		# de saída reflete apenas a incerteza da janela de entrada do passo)
@@ -172,8 +196,15 @@ class AutoCloud:
 		self.xF = 0
 		self.Dmax = 0
 
-		self.rls = RLS_LogarithmicRegressor(ff=ff_rls,dt=dt_rls)
-		#self.rls = RLS(nf=nf_rls,ff=ff_rls,dt=dt_rls)
+		# Modelo do erro absoluto do HI em função do HI previsto: 'log' (b0 + b1*ln x + b2*ln^2 x, x > 0) ou
+		# 'poly' (polinômio de grau nf_rls com termo afim). ff_rls: fator de esquecimento; dt_rls: P inicial.
+		if rls_model == 'log':
+			self.rls = RLS_LogarithmicRegressor(ff_rls, dt_rls)
+		elif rls_model == 'poly':
+			self.rls = RLS(nf=nf_rls, ff=ff_rls, dt=dt_rls)
+		else:
+			raise ValueError("rls_model deve ser 'log' ou 'poly'.")
+		self.rls_model = rls_model
 
 		self.sp = 0
 		self.cov = 0
@@ -194,35 +225,26 @@ class AutoCloud:
 	def UpdateRLS(self,mode='RUL'):
 
 		if mode == 'RUL':
-			#x = self.rulP[-1]
-			#eP = self.rls.predict(x)
-			#eR = np.abs(self.rulP[-1]-self.rulR[-1])
-			#self.rls.update(x,eR)
-			#self.RUL_Granularity()
-
-			x = self.hiP[-1]
-			if x < 0:
-				x = 1e-9
+			x = self.rulP[-1]
 			eP = self.rls.predict(x)
-			eR = np.abs(self.hiP[-1]-self.hiR[-1])
+			eR = np.abs(self.rulP[-1]-self.rulR[-1])
 			self.rls.update(x,eR)
 			self.RUL_Granularity()
-			# Valor real do HI conhecido: atualiza o rho do próximo passo
-			if self.rho_dyn and self.ehat_last is not None:
-				self.UpdateRhoGrad(eR, self.ehat_last)
-				self.ehat_last = None
 
 		if mode == 'HI':
 			x = self.hiP[-1]
-			if x < 0:
-				x = 1e-9
+			if self.rls_model == 'log':
+				x = max(x, 1e-9)                    # mesmo domínio de ErrorModelHI (ln x exige x > 0)
 			eP = self.rls.predict(x)
 			eR = np.abs(self.hiP[-1]-self.hiR[-1])
 			self.rls.update(x,eR)
 			self.HI_Granularity()
 			# Valor real do HI conhecido: atualiza o rho do próximo passo
 			if self.rho_dyn and self.ehat_last is not None:
-				self.UpdateRhoGrad(eR, self.ehat_last)
+				if self.rho_update == 'occ':
+					self.UpdateRhoOCC(eR, self.ehat_last)
+				else:
+					self.UpdateRhoGrad(eR, self.ehat_last)
 				self.ehat_last = None
 
 		self.eP = np.append(self.eP,eP)
@@ -242,13 +264,36 @@ class AutoCloud:
 		self.rho = float(np.clip(self.rho + self.rho_eta * self._rho_m, self.rho_min, self.rho_max))
 		self.rho_grad_hist = np.append(self.rho_grad_hist, g)
 
+	def UpdateRhoOCC(self, e, ehat):
+		# Controle online da cobertura (ACI / conformal PID) com o HI real do passo atual
+		err = 1.0 - float(self.cov_hist[-1])             # cobertura do passo pelo intervalo realmente usado
+		s = abs(e) / ehat if ehat > 0 else np.nan
+		self.occ_err_hist = np.append(self.occ_err_hist, err)
+		self.occ_score_hist = np.append(self.occ_score_hist, s)
+		gamma = self.occ_gamma
+		if self.occ_win is not None:
+			recent = self.occ_score_hist[-int(self.occ_win):]
+			recent = recent[np.isfinite(recent)]
+			if recent.size:
+				gamma = self.occ_gamma * float(recent.max())
+		self._occ_q = float(np.clip(self._occ_q + gamma * (err - self.occ_alpha), self.rho_min, self.rho_max))
+		self._occ_S += err - self.occ_alpha
+		if self.occ_KI == 0.0:
+			I = 0.0
+		elif self.occ_Csat is None:
+			I = self.occ_KI * self._occ_S
+		else:
+			I = self.occ_KI * self.occ_Csat * np.tanh(self._occ_S / self.occ_Csat)
+		self.occ_I_hist = np.append(self.occ_I_hist, I)
+		self.rho = float(np.clip(self._occ_q + I, self.rho_min, self.rho_max))
+
 	def HI_Granularity(self):
 
 		hiR,hiL,hiU,hiP = self.hiR,self.hiL,self.hiU,self.hiP
 
 		#Range = np.max(hiR) - np.min(hiR)
 		Range = 1 - 0
-		cov, sp, Vsum = np.array([]), np.array([]), 0
+		cov, sp = np.array([]), np.array([])
 		
 		for hR,hL,hU in zip(hiR,hiL,hiU):
 			if hR>= hL and hR<= hU:
@@ -257,19 +302,18 @@ class AutoCloud:
 				cov = np.append(cov,0)
 			spVal = max(0, 1 - (hU-hL)/Range )
 			sp = np.append(sp, spVal)
-			Vsum +=  cov[-1]*sp[-1]
+
 		self.sp = sp.mean()
 		self.cov = cov.mean()
 		self.sp_hist = sp
 		self.cov_hist = cov
 		#self.V = cov.mean() * sp.mean()
 		self.V = (cov * sp).mean() 
-		self.Vsum = Vsum
 
 	def RUL_Granularity(self):
 		rulR,rulL,rulP,rulU = self.rulR,self.rulL,self.rulP,self.rulU
 		Range = np.max(rulR) - np.min(rulR)
-		cov, sp, Vsum = np.array([]), np.array([]), 0
+		cov, sp = np.array([]), np.array([])
 
 		for rR,rL,rU in zip(rulR,rulL,rulU):
 			if rR>= rL and rR<= rU:
@@ -278,15 +322,11 @@ class AutoCloud:
 				cov = np.append(cov,0)
 			spVal = max(0, 1 - (rU-rL)/Range )
 			sp = np.append(sp, spVal)
-			Vsum +=  cov[-1]*sp[-1]
 
-			self.sp = sp.mean()
-			self.cov = cov.mean()
-			self.sp_hist = sp
-			self.cov_hist = cov
-			#self.V = cov.mean() * sp.mean()
-			self.V = (cov * sp).mean() 
-			self.Vsum = Vsum
+		self.sp = sp.mean()
+		self.cov = cov.mean()
+		#self.V = cov.mean() * sp.mean()
+		self.V = (cov * sp).mean() 
 
 	def UpdateRho(self, truth):
 		# Atualização online do rho: acumula cov/sp de cada candidato com o valor real e escolhe o melhor V
@@ -566,7 +606,7 @@ class AutoCloud:
 	def ErrorModelHI(self, y):
 		# Erro absoluto estimado de uma predição de HI de valor y (modelo logarítmico RLS de UpdateRLS(mode='HI'));
 		# antes do primeiro ajuste o modelo retorna 0 (intervalo degenerado)
-		return abs(self.rls.predict(max(y, 1e-9)))
+		return abs(self.rls.predict(max(y, 1e-9) if self.rls_model == 'log' else y))
 
 	def RULInterv2(self,X,lim=None,show=False):
 		'''
