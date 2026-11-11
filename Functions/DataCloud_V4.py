@@ -39,6 +39,7 @@ class DataCloud:
 		self.rulP = np.array([])
 		self.rulR = np.array([])
 		self.rulM = []
+		self.hiM = []                       # HI previsto nos passos em que o grânulo foi ativado (gráficos)
 		self.rulU = []
 		self.rulL = []
 		self.t = []

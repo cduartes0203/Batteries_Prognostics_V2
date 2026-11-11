@@ -1813,7 +1813,7 @@ def PlotDSI_2D_PLT(teda, w=15, h=4,ftrs=None, out=None,
 def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
-                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+                   mergeID=False, m1=4, m2=3, m3=1, ncol=4, HideCol=None, dsi_mode='last3'):
     '''
     dsi_mode: tratamento de DSI com 4 ou mais atributos (RS com 4+ colunas)
         'last3': coluna 1 (granulação espacial 3D) usa apenas os 3 últimos atributos do DSI
@@ -1994,7 +1994,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
 
         for i, cloud in enumerate(teda.c):
             fig.add_trace(go.Scatter(x=cloud.t2, y=cloud.rulM, mode='markers',
-                                     marker=dict(symbol='star', size=m3*2.5, color=colors[i]),
+                                     marker=dict(symbol='circle', size=m3*2.5, color=colors[i]),
                                      name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
                                      showlegend=False, legend='legend2'), **pRUL)
 
@@ -2020,6 +2020,14 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
             fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='blue', width=1.75, dash='dash'),
                                      showlegend=False, legend='legend3'), **pHI)
         band(hiL, hiU, Uncertainty, cyan, 'legend3', pHI)
+        # HI previsto pintado com a cor de cada grânulo ativado no passo (como na RUL)
+        for i, cloud in enumerate(teda.c):
+            hiM = getattr(cloud, 'hiM', [])
+            if len(hiM) == len(cloud.t2) and len(hiM) > 0:
+                fig.add_trace(go.Scatter(x=cloud.t2, y=hiM, mode='markers',
+                                         marker=dict(symbol='circle', size=m3*2.5, color=colors[i]),
+                                         name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
+                                         showlegend=False, legend='legend3'), **pHI)
 
         hL = np.min(hiL[int(0.2*len(xS)):])
         hU = np.max(hiU[int(0.2*len(xS)):])
@@ -2358,6 +2366,11 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
         ax4.fill_between(xS, teda.hiL, teda.hiU,
                                  label=Uncertainty,
                                  color ='c',alpha=.3,)
+        # HI previsto pintado com a cor de cada grânulo ativado no passo (como na RUL)
+        for i, cloud in enumerate(teda.c):
+            hiM = getattr(cloud, 'hiM', [])
+            if len(hiM) == len(cloud.t2) and len(hiM) > 0:
+                ax4.plot(cloud.t2, hiM, linestyle=' ', marker='*', markersize=m3, color=colors[i], label=None)
 
         hiL = np.min(teda.hiL[int(0.2*len(xS)):])
         hiU = np.max(teda.hiU[int(0.2*len(xS)):])

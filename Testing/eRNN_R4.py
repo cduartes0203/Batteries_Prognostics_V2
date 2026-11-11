@@ -177,6 +177,33 @@ class eRNN:
         self.x = xP
         self.k += 1
 
+    def Step(self, xP):
+        '''Passo direto (forward) sem aprendizado: avança o estado recorrente hP com a entrada xP, como fit,
+        mas sem atualizar pesos nem traços de elegibilidade (modelo congelado, AutoCloud.Freeze).'''
+        xP = np.append(xP, 1)
+        curr_in, new_uP, new_hP = xP, [], []
+        for l in range(self.nL):
+            u = self.wR[l] @ self.hP[l] + self.wI[l] @ curr_in
+            h = self.hP[l] * (1 - 1 / self.τ) + Activation(u, self.act) / self.τ
+            new_uP.append(u)
+            new_hP.append(h)
+            curr_in = np.append(h, 1)
+        self.hP = [h.copy() for h in new_hP]
+        self.Restore()
+        self.uP = new_uP
+        self.x = xP
+        self.k += 1
+
+    def ResetState(self):
+        '''Reinicia o estado recorrente (hP, hP2, hL2, hU2, uP, x) e os traços de elegibilidade (pS, qS) aos valores
+        iniciais, mantendo os pesos (wR, wI, wO): início de uma nova série temporal (novo rolamento).'''
+        self.hP = [0.1 * np.ones(size) for size in self.nR]
+        self.Restore()
+        self.uP = [np.zeros(size) for size in self.nR]
+        self.pS = [np.zeros_like(p) for p in self.pS]
+        self.qS = [np.zeros_like(q) for q in self.qS]
+        self.x = np.zeros_like(self.x)
+
     def Advance(self, x):
         # Um passo livre a partir do estado de predição hP2 (avança hP2)
         curr_in = np.append(x, 1)

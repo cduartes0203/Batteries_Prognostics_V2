@@ -16,7 +16,7 @@ set "INST=principal"
 set "SAMP=random"
 set "PRUNE=0"
 set "NTR=5000"
-set "MS=1.5 4.5"
+set "MS=1.65 2.05"
 set "NLS=3 4"
 set "NOS=1 9"
 set "MOS=0 10"
@@ -46,7 +46,7 @@ if /i not "%OK%"=="S" (
     goto fim
 )
 echo.
-".venv\Scripts\python.exe" TedaRNN_Opt.py --instancia "%INST%" --sampler %SAMP% --prune %PRUNE% --n_trials %NTR% --mS %MS% --nLS %NLS% --nOS %NOS% --mOS %MOS%
+".venv\Scripts\python.exe" TedaRNN_Opt_R1.py --instancia "%INST%" --sampler %SAMP% --prune %PRUNE% --n_trials %NTR% --mS %MS% --nLS %NLS% --nOS %NOS% --mOS %MOS%
 
 :fim
 echo.

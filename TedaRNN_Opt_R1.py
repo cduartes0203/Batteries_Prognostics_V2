@@ -21,7 +21,7 @@ parser.add_argument("--instancia", default="principal", help="sufixo do nome da 
 parser.add_argument("--sampler", default="random", type=str.lower, choices=SAMPLERS, help="OptSampler (padrão: random)")
 parser.add_argument("--prune", default=0, type=int, choices=[0, 1], help="OptPrune: 1 = poda de trials ruins (padrão: 0)")
 parser.add_argument("--n_trials", default=5000, type=int, help="nº de trials novos por sessão e por nº de camadas (padrão: 5000)")
-parser.add_argument("--mS", nargs=2, type=float, default=[1.5, 4.5], metavar=('MIN', 'MAX'), help="faixa de m (padrão: 1.45 4.5)")
+parser.add_argument("--mS", nargs=2, type=float, default=[1.65, 2.05], metavar=('MIN', 'MAX'), help="faixa de m (padrão: 1.65 2.05)")
 parser.add_argument("--nLS", nargs=2, type=int, default=[3, 4], metavar=('MIN', 'MAX'), help="faixa do nº de camadas (padrão: 3 4)")
 parser.add_argument("--nOS", nargs=2, type=int, default=[1, 9], metavar=('MIN', 'MAX'), help="faixa de nO, valores futuros de Z_k (padrão: 1 9)")
 parser.add_argument("--mOS", nargs=2, type=int, default=[0, 10], metavar=('MIN', 'MAX'), help="faixa de mO, valores passados de Z_k (padrão: 0 10)")
@@ -30,7 +30,7 @@ args = parser.parse_args()
 def check(name, r, low):
     if not low <= r[0] <= r[1]:
         parser.error(f'{name}: requer {low} <= MIN <= MAX (recebido {r[0]} {r[1]})')
-check('mS', args.mS, 0.125)       # m é sugerido em passos de 0.25
+check('mS', args.mS, 0.025)       # m é sugerido em passos de 0.25
 check('nLS', args.nLS, 1)
 check('nOS', args.nOS, 1)
 check('mOS', args.mOS, 0)
@@ -48,12 +48,9 @@ LAM = 1.0                   # fator de esquecimento (1.0 = todos os passos com o
 RS = pd.read_excel(r'Dataset\RS.xlsx')
 HI = pd.read_excel(r'Dataset\HI.xlsx')
 
-path = r'Dataset\DSIR1\Bearing1_1.csv'
-RS = pd.read_csv(path).iloc[:,-6:-1]
-RS = dfMovingAvg(RS,10)
-RS = dfExpMovAvg(RS,0.3)
-RS = normalize_df(RS,0,25)
-path = r'Dataset\HI1\Bearing1_1.csv'
+path = r'Dataset\DSIR1n\B1_1.csv'
+RS = pd.read_csv(path)
+path = r'Dataset\HI4\Bearing1_1.csv'
 HI = pd.read_csv(path)
 
 if __name__ == '__main__':
