@@ -101,4 +101,15 @@ class DataCloud:
 			self.R_ = np.append(self.R_,R)
 			self.V = (math.pi ** (dim / 2)) / math.gamma((dim / 2) + 1) * (self.R ** dim)
 
-	
+
+	def restart(self):
+		self.x = []
+		self.xid = []                     # ID do grânulo que assimilou cada amostra de x (identidade de origem)
+		self.rulP = np.array([])
+		self.rulR = np.array([])
+		self.rulM = []
+		self.hiM = []                       # HI previsto nos passos em que o grânulo foi ativado (gráficos)
+		self.rulU = []
+		self.rulL = []
+		self.t = []
+		self.t2 = []

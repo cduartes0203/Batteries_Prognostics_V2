@@ -518,8 +518,9 @@ def OptimizeSeq(
     Como Optimize, mas para uma sequência de rolamentos simulados com o MESMO modelo (AutoCloud.SimSequence).
 
     data    : [(nome, RS, HI), ...] na ordem da sequência (ex.: [('B1_1', RS11, HI11), ('B1_2', RS12, HI12)]).
-    transfer: 'adapt'  -> o modelo continua aprendendo (grânulos e RNNs) nos rolamentos seguintes;
-              'freeze' -> o modelo é congelado ao fim do primeiro rolamento (AutoCloud.Freeze).
+    transfer: 'adapt'   -> o modelo continua aprendendo (grânulos e RNNs) nos rolamentos seguintes (SimSequence);
+              'freeze'  -> o modelo é congelado ao fim do primeiro rolamento (AutoCloud.Freeze);
+              'restart' -> como em Teda_R00.ipynb: AutoCloud.restart(ref) entre os rolamentos (ver OptimizeSeq2).
     Cada rolamento: janelas, EoL, RUL real e WAPE próprios; termina no EoL; estado recorrente das RNNs reiniciado
     no início de cada rolamento (pesos mantidos). Os hiperparâmetros [m, nI, nR, nO, mO, N1, N2, N3, τ, act] são os
     mesmos em toda a sequência.
@@ -530,7 +531,7 @@ def OptimizeSeq(
     Demais argumentos: como em Optimize (apenas mono-objetivo).
     '''
     if not data: raise ValueError('Informe data = [(nome, RS, HI), ...].')
-    if transfer not in ('adapt', 'freeze'): raise ValueError("transfer deve ser 'adapt' ou 'freeze'.")
+    if transfer not in ('adapt', 'freeze', 'restart'): raise ValueError("transfer deve ser 'adapt', 'freeze' ou 'restart'.")
     names = [d[0] for d in data]
     if len(set(names)) != len(names): raise ValueError(f'Nomes de rolamento repetidos: {names}')
     tag = RunTag(SeqTag(FileName, names, transfer), feedback, wtaG, wtaP)
@@ -594,7 +595,21 @@ def OptimizeSeq(
             if OptPrune and len(errs) < len(ds):      # poda com a média parcial ao fim de cada rolamento
                 trial.report(float(np.mean(errs)), len(errs))
                 if trial.should_prune(): raise TrialPruned()
-        teda.SimSequence(ds, transfer=transfer, mode='single', update_rls=False, on_end=on_end, check=check)
+        if transfer == 'restart':
+            # Abordagem de Teda_R00.ipynb: o 1º rolamento cria o modelo; antes de cada rolamento seguinte, restart(ref)
+            # (reinicia RUL/HI/WAPE e os registros dos grânulos, mantendo grânulos, RNNs, modelo do erro e rho)
+            for b, d in enumerate(ds):
+                if b > 0: teda.restart(d['ref'])
+                X, Y, Z = d['X'], d['Y'], d['Z']
+                for j in range(d['J']):
+                    teda.run(X[j])
+                    teda.RUL_Prediction(Y[j], mode='single', lim=d['L'])
+                    teda.Adapt(Y[j], Z[j])
+                    check(teda, b, j)
+                teda.segments[d['name']] = dict(name=d['name'], wape_RUL=float(teda.wape_RUL), wape_HI=float(teda.wape_HI))
+                on_end(teda, d['name'])
+        else:
+            teda.SimSequence(ds, transfer=transfer, mode='single', update_rls=False, on_end=on_end, check=check)
         return float(np.mean(errs))
 
     for i in range(n_study):
@@ -649,6 +664,26 @@ def OptimizeSeq(
     df_stdy = df_stdy.drop(columns=['_nL']).reset_index(drop=True)
     df_stdy.to_csv(out_path, index=False)
     return df_stdy
+
+
+def OptimizeSeq2(data=None, FileName=None, **kw):
+    '''
+    Otimização em sequência de rolamentos com a abordagem de Teda_R00.ipynb (AutoCloud.restart):
+      - o 1º rolamento de data cria e treina o modelo (granulação + RNNs) até o EoL;
+      - antes de cada rolamento seguinte, teda.restart(ref) reinicia os vetores de RUL e HI (rulP/L/U/R, hiP/L/U/R),
+        o WAPE e os registros de amostras dos grânulos, e o tempo/RUL real/pesos do WAPE ficam locais ao rolamento
+        (k continua global). Grânulos, pesos das RNNs, estado recorrente, modelo do erro e rho são mantidos, e o
+        modelo continua aprendendo (como 'adapt').
+    Diferença para OptimizeSeq(transfer='adapt'): restart não reinicia o estado recorrente das RNNs nem os traços de
+    elegibilidade (NewSegment os reinicia) e apaga os registros de amostras dos grânulos (cloud.x, cloud.t).
+    data: [(nome, RS, HI), ...] na ordem da sequência; cada rolamento usa o próprio HI no EoL (RefEoL).
+    Objetivo, faixas de busca, sessões, poda e tabela: como OptimizeSeq (média, sobre os rolamentos, de
+    WAPE_RUL + WAPE_HI das predições pontuais; WAPE de cada rolamento na tabela).
+    Resultados em Optimization/<FileName>_<nomes>_restart_<feedback>_G<wtaG>P<wtaP>/ (estudos próprios).
+    Demais argumentos (kw): os de OptimizeSeq (exceto transfer).
+    '''
+    if 'transfer' in kw: raise ValueError('OptimizeSeq2 usa sempre restart; para adapt/freeze use OptimizeSeq.')
+    return OptimizeSeq(data=data, FileName=FileName, transfer='restart', **kw)
 
 
 def OptimizeRhoSeq(

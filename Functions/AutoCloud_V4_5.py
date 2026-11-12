@@ -253,6 +253,8 @@ class AutoCloud:
 		self.Rmax_gm = 0
 		self.Vmax_gm = 0
 
+		self.transfer = False
+
 	def UpdateRLS(self,mode='RUL'):
 
 		if mode == 'RUL':
@@ -1041,14 +1043,14 @@ class AutoCloud:
 	def run(self,X):
 		self.alfa = np.zeros((np.size(self.c)),dtype=float)
 		self.listIntersection = np.zeros((np.size(self.c)),dtype=int)
-		if self.k==1:
+		if self.k==1 and not self.transfer:
 			self.xR = X
 			self.CreateCloud(X,self.k,self.store)
 			self.alfa = np.ones(1)
 			self.gm = DataCloud(X,(self.k-1),'GM',self.rho,self.m,nI=self.nI,nR=self.nR,nO=self.nOut,
 					ηS=[self.N1,self.N2,self.N3],tau=self.tau,sd=self.sd,act=self.act,feedback=self.feedback,nPast=self.mO)
 
-		elif self.k==2:
+		elif self.k==2 and not self.transfer:
 			self.c[0].AddDataClaud(X,self.k,self.store)
 			v = self.c[0].variance
 			n = self.c[0].n
@@ -1062,7 +1064,7 @@ class AutoCloud:
 			self.k=self.k+1
 			return
 
-		elif self.k>=3:
+		elif self.k>=3 or self.transfer:
 			i=0
 			createCloud = True
 			params = [[] for l in range(len(self.c))]
@@ -1115,3 +1117,53 @@ class AutoCloud:
 		self.cycleP = np.append(self.cycleP,self.st+self.k-1)
 		self.rulR_Train = np.append(self.rulR_Train,self.end-self.k)
 		self.k=self.k+1
+
+	def restart(self,ref):
+		self.eolX = 0
+		self.HI = np.array([])
+		self.DSI = np.array([])
+		self.eolDSI = 0
+		self.HIp = np.array([])
+		self.cycleP=np.array([])
+
+		# k continua global (tipicidade n_tip/(k-2), gm.n, cobertura dos grânulos): zerá-lo faz k-2 = 0 no 2º passo
+		# (alfa = inf -> hiP = NaN, que contamina o RLS e o rho). Tempo, RUL real e pesos do WAPE ficam locais ao
+		# novo rolamento pelo deslocamento k_seg (mesmo mecanismo de NewSegment)
+		self.k_seg = self.k - 1
+		self.k_seg_start = self.k
+		self.t = np.array([])
+		self.rulL = np.array([])
+		self.rulP = np.array([])
+		self.rulU = np.array([])
+		self.rulR = np.array([])
+		# 1 quando a trajetória (inferior, pontual, superior) não atinge o EoL e a RUL é truncada em lim
+		self.rulCapL = np.array([], dtype=int)
+		self.rulCapP = np.array([], dtype=int)
+		self.rulCapU = np.array([], dtype=int)
+		self.ref = ref
+		self.rulR_Train = np.array([])
+		self.lim = 160
+
+		self.hiR = np.array([])
+		self.hiP = np.array([])
+		self.hiL = np.array([])
+		self.hiU = np.array([])
+
+		self.wape_RUL_hist = np.array([])
+		self.wape_RUL = 0
+		self.eRul_Sum = 0
+		self.eRul_Diff = 0
+
+		self.wape_HI_hist = np.array([])
+		self.wape_HI = 0
+		self.eHI_Sum = 0
+		self.eHI_Diff = 0
+
+		self.wape_HI_hist2 = np.array([])
+		self.wape_HI2 = 0
+		self.eHI_Sum2 = 0
+		self.eHI_Diff2 = 0
+		self.transfer = True
+
+		for c in self.c:
+			c.restart()
