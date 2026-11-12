@@ -847,12 +847,10 @@ class AutoCloud:
 				i = 0
 			else: i += 1
 
-	def SimGranularRUL(self,interval,J,L,X,Y,Z):
-		if interval==True: interval = 'interval'
-		else: interval = 'single'
+	def SimGranularRUL(self,J,L,X,Y,Z):
 		for j,_ in enumerate(X[:J]):
 			self.run(X[j])
-			self.RUL_Prediction(Y[j],mode=interval,lim=L,show=False)
+			self.RUL_Prediction(Y[j],mode='interval',lim=L,show=False)
 			self.WAPE_HI2(Y[j],Z[j])
 			self.Adapt(Y[j],Z[j])
 			self.UpdateRLS(mode='HI')
