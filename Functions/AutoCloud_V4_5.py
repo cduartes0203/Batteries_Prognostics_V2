@@ -12,6 +12,12 @@ def RunTag(filename=None, feedback=None, wtaG=None, wtaP=None):
     wtaP = WTAP if wtaP is None else wtaP
     return f'{filename}_{feedback}_G{int(wtaG)}P{int(wtaP)}'
 
+def _XID(cloud):
+    # Identidade de origem de cada amostra do grânulo (grânulos criados antes deste registro: o próprio ID)
+    xid = getattr(cloud, 'xid', None)
+    if xid is None or len(xid) != len(cloud.x): return [cloud.ID] * len(cloud.x)
+    return list(xid)
+
 def RefEoL(sig, eol, kX, strict=False, frac=False):
     '''
     Referência da RUL real baseada no limiar de EoL (eq. 12): RUL_real(k) = iEoL - k,
@@ -118,6 +124,7 @@ class AutoCloud:
 		self.seg_name = None
 		self.segments = {}                  # resultados arquivados de cada rolamento (EndSegment)
 		self.frozen = False
+		self.c_retired = []                # grânulos substituídos em fusões (estado no momento da fusão; gráficos)
 		self.lam = lam
 		self.S_w = 0.0                      # soma (com esquecimento) dos pesos dos passos
 		self.Vsum = 0.0
@@ -794,6 +801,7 @@ class AutoCloud:
 
 					x = self.c[i].x + self.c[j].x
 					t = self.c[i].t + self.c[j].t
+					xid = _XID(self.c[i]) + _XID(self.c[j])
 					t2 = self.c[i].t2 + self.c[j].t2
 
 					rulM = rulMI + rulMJ
@@ -806,6 +814,7 @@ class AutoCloud:
 					result = mat[np.sort(index)]
 					t = result[:, 0].tolist()
 					x = result[:, 1].tolist()
+					xid = [xid[q] for q in np.sort(index)]          # mesma seleção (amostra repetida: origem do 1º grânulo)
 
 					#mat = np.array(list(zip(t2,rulL,rulM,rulU)), dtype=object)
 					#col = mat[:, 0].astype(int) 
@@ -824,6 +833,11 @@ class AutoCloud:
 					newCloud.xMax = 0.5*(self.c[i].xMax + self.c[j].xMax)
 					newCloud.xMin = 0.5*(self.c[i].xMin + self.c[j].xMin)
 					newCloud.t = t
+					newCloud.xid = xid
+					for old in (self.c[i], self.c[j]):              # guardados para os gráficos (identidade de origem)
+						old.k_retired = self.k
+						old.merged_into = newCloud.ID
+						self.c_retired.append(old)
 					#newCloud.t2 = t2
 					#newCloud.rulL = rulL
 					#newCloud.rulM = rulM
@@ -955,20 +969,46 @@ class AutoCloud:
 			if on_end is not None: on_end(self, d['name'])
 		return self.segments
 
-	def PlotView(self):
+	def PlotView(self, identity='current'):
 		'''
-		Cópia rasa para PlotSimulation com apenas o rolamento atual: pontos de cada grânulo (cloud.x, cloud.t)
-		restritos às amostras deste rolamento, com tempo local; grânulos sem amostras do rolamento são omitidos.
-		O modelo não é alterado.
+		Cópia rasa para PlotSimulation com apenas o rolamento atual (amostras com t >= início do rolamento, tempo local;
+		sem NewSegment: toda a série). O modelo não é alterado.
+		identity: 'current' -> grânulos atuais; cada amostra aparece no grânulo que a contém agora (após fusões);
+		          'origin'  -> um grânulo por identidade de origem (ID na criação): cada amostra aparece no grânulo que a
+		                       assimilou, mesmo que ele tenha sido fundido depois. Grânulos fundidos são desenhados com a
+		                       forma (centro, raio) do momento da fusão e mantêm seus marcadores de RUL/HI do rolamento.
+		Grânulos sem amostras do rolamento são omitidos.
 		'''
+		if identity not in ('current', 'origin'): raise ValueError("identity deve ser 'current' ou 'origin'.")
 		v = copy.copy(self)
-		cs = []
+		in_seg = lambda t: t >= self.k_seg_start
+		if identity == 'current':
+			cs = []
+			for cloud in self.c:
+				pts = [(t, x, i) for t, x, i in zip(cloud.t, cloud.x, _XID(cloud)) if in_seg(t)]
+				if not pts: continue
+				cv = copy.copy(cloud)
+				cv.t, cv.x, cv.xid = [t - self.k_seg for t, _, _ in pts], [x for _, x, _ in pts], [i for _, _, i in pts]
+				cs.append(cv)
+			v.c = np.array(cs, dtype=object)
+			return v
+		# identidade de origem: amostras de todos os grânulos atuais agrupadas pelo ID que as assimilou
+		groups = {}
 		for cloud in self.c:
-			pts = [(t, x) for t, x in zip(cloud.t, cloud.x) if t >= self.k_seg_start]
-			if not pts: continue
-			cv = copy.copy(cloud)
-			cv.t = [t - self.k_seg for t, _ in pts]
-			cv.x = [x for _, x in pts]
+			for t, x, i in zip(cloud.t, cloud.x, _XID(cloud)):
+				if in_seg(t): groups.setdefault(i, []).append((t, x))
+		obj = {c.ID: c for c in getattr(self, 'c_retired', [])}
+		obj.update({c.ID: c for c in self.c})                 # grânulo vivo prevalece
+		cs = []
+		for i in sorted(groups, key=lambda g: (isinstance(g, str), g)):
+			if i not in obj: continue
+			src = obj[i]
+			cv = copy.copy(src)
+			pts = sorted(groups[i], key=lambda p: p[0])
+			cv.t, cv.x, cv.xid = [t - self.k_seg for t, _ in pts], [x for _, x in pts], [i] * len(pts)
+			if getattr(src, 'k_retired', np.inf) < self.k_seg_start:   # fundido em rolamento anterior: sem marcadores
+				cv.t2, cv.rulM, cv.rulL, cv.rulU, cv.hiM = [], [], [], [], []
+				cv.rulR, cv.rulP = np.array([]), np.array([])
 			cs.append(cv)
 		v.c = np.array(cs, dtype=object)
 		return v
@@ -996,6 +1036,7 @@ class AutoCloud:
 				if alfa[i] > 0:
 					cloud.t.append(self.k)
 					cloud.x.append(X)
+					if hasattr(cloud, 'xid'): cloud.xid.append(cloud.ID)
 
 	def run(self,X):
 		self.alfa = np.zeros((np.size(self.c)),dtype=float)

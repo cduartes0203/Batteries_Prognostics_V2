@@ -36,6 +36,7 @@ class DataCloud:
 					[self.N1, self.N2, self.N3], self.tau, self.sd, self.mode, self.act,
 					feedback=feedback, nPast=nPast)
 		self.x = [x]
+		self.xid = [ID]                     # ID do grânulo que assimilou cada amostra de x (identidade de origem)
 		self.rulP = np.array([])
 		self.rulR = np.array([])
 		self.rulM = []
@@ -77,6 +78,7 @@ class DataCloud:
 		if store:
 			self.t.append(t)
 			self.x.append(x)
+			self.xid.append(self.ID)
 
 	def UpdateDataCloud(self,n,mean,meant,variance,tipicality,t,x,store=False):
 		self.n=n
@@ -90,6 +92,7 @@ class DataCloud:
 		if store:
 			self.t.append(t)
 			self.x.append(x)
+			self.xid.append(self.ID)
 
 	def AdjustBounds(self, x, k, density=False):
 			dim = self.dim

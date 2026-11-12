@@ -1810,10 +1810,143 @@ def PlotDSI_2D_PLT(teda, w=15, h=4,ftrs=None, out=None,
     plt.show()'''
 
 
+# ----------------------------------------------------------------------------------------------------------------------
+# Escala comum dos modos 'plt' (matplotlib) e 'ply' (plotly) de PlotSimulation
+#   - w, h em POLEGADAS nos dois modos (como figsize do matplotlib); 'ply' usa w*SCREEN_DPI x h*SCREEN_DPI px.
+#   - tamanhos de marcadores, linhas e fontes definidos em pontos (pt, 1/72 pol) em _PlotSizes; 'ply' converte
+#     pt -> px com SCREEN_DPI/72. Os marcadores somam a borda de 1 pt que o matplotlib desenha (lines.markeredgewidth).
+#   - 'plt' é exibido no notebook com exatamente w*SCREEN_DPI px de largura (sem o corte 'tight' do backend inline),
+#     logo as duas figuras têm o mesmo tamanho na tela. Tamanhos absolutos: mudar w ou h não altera os marcadores.
+# SCREEN_DPI = 100 é o figure.dpi padrão do matplotlib; altere aqui (TedaGraphs.SCREEN_DPI) para ampliar/reduzir tudo.
+# ----------------------------------------------------------------------------------------------------------------------
+SCREEN_DPI = 100
+MARKER_EDGE_PT = 1.0
+
+def _px(pt):
+    '''Pontos (matplotlib) -> pixels (plotly).'''
+    return pt * SCREEN_DPI / 72
+
+def _mpx(ms, edge=MARKER_EDGE_PT):
+    '''Diâmetro visível (px) de um marcador do matplotlib com markersize ms (pt) e borda edge (pt).'''
+    return _px(ms + edge)
+
+def _spx(s, edge=MARKER_EDGE_PT):
+    '''Diâmetro visível (px) de um marcador de scatter do matplotlib com área s (pt^2) e borda edge (pt).'''
+    return _px(np.sqrt(s) + edge)
+
+def _PlotSizes(m1, m2, m3):
+    '''Tamanhos em pt (matplotlib) usados pelos dois modos. ms = markersize, s = área de scatter, lw = linewidth.'''
+    return dict(
+        pt3d_s=m1*3, leg3d_s=m2*5, center_s=m1*25, center_lw=0.5, center_leg_lw=0.75, axes3d_lw=0.5, wire_lw=0.4,
+        dsi_ms=m2,
+        rul_lw=[0.5, 1.25, 1.25, 1.25], rulP_ms=m3*1.35, tol_lw=0.5, gran_ms=m3,
+        hiR_lw=1.5, hiP_lw=1.25, hiP_ms=m3, hiLU_lw=1.25,
+        wape_lw=1.25, grid_lw=0.8, axes_lw=0.8,
+        font=10.0, font_small=10.0/1.2, font_title=12.0)
+
+def _DSIScale(teda, ftrs, h=4):
+    '''Escala comum dos gráficos de granulação temporal do IED (todos os ftrs atributos, todos os grânulos):
+    L = ymin - 0.15*(ymax - ymin) (folga proporcional abaixo do menor valor) e U = máximo global de
+    (max(y) + 0.15*max(y)), com y = valores de cada atributo em cada grânulo; os dados ficam sempre dentro de [L, U]. ticks: até 4 valores "redondos" em [L, U]
+    (mesmas linhas de grade nos modos 'plt' e 'ply').'''
+    from matplotlib.ticker import MaxNLocator
+    Us, lo, hi = [], np.inf, -np.inf
+    for cloud in teda.c:
+        if cloud.ID == 'GM' or len(cloud.x) == 0: continue
+        X = np.array(cloud.x)
+        for j in range(ftrs):
+            y = X.T[-ftrs+j]
+            Us.append(np.max(y) + 0.15*np.max(y))
+            lo, hi = min(lo, np.min(y)), max(hi, np.max(y))
+    if not Us: return 0.0, 1.0, np.array([0.0, 0.5, 1.0])
+    U = max(max(Us), hi)
+    L = lo - 0.15 * (hi - lo)
+    if not U > L: L, U = L - 0.5, U + 0.5
+    sub_h = h * SCREEN_DPI * 0.8 / ftrs                     # altura aproximada de cada gráfico (px)
+    nbins = int(np.clip(sub_h // (2.5 * _px(10/1.2)), 1, 5))   # rótulos 'small' separados por >= 2.5 alturas
+    ticks = MaxNLocator(nbins=nbins, steps=[1, 2, 2.5, 5, 10]).tick_values(L, U)
+    ticks = ticks[(ticks >= L - 1e-12) & (ticks <= U + 1e-12)]
+    return float(L), float(U), ticks
+
+# Paleta categórica por ID (gcolor='id'): 19 cores de contraste máximo de Kelly (1965), sem branco, preto e cinza,
+# na ordem original (cores consecutivas bem distintas: grânulos criados próximos no tempo, que costumam coexistir num
+# gráfico, ficam com cores diferentes); repete a cada 19 IDs
+_ID_PALETTE = [mpl.colors.to_rgb(c) for c in (
+    '#FFB300', '#803E75', '#FF6800', '#A6BDD7', '#C10020', '#CEA262', '#007D34', '#F6768E', '#00538A', '#FF7A5C',
+    '#53377A', '#FF8E00', '#B32851', '#F4C800', '#7F180D', '#93AA00', '#593315', '#F13A13', '#232C16')]
+
+def _GranuleColors(teda, fmt='rgba', gcolor='index'):
+    '''Cores dos grânulos de teda.c, na mesma ordem.
+    gcolor: 'index' -> mapa 'plasma' distribuído pelos grânulos do gráfico (esquema original: cores bem separadas,
+                       mas a cor de um grânulo depende de quantos grânulos o gráfico tem);
+            'id'    -> cor fixa pelo ID do grânulo (paleta de Kelly, 19 cores): mesma cor em todos os gráficos.
+    fmt: 'rgba' (tuplas 0-1, matplotlib) ou 'css' ('rgb(r, g, b)', plotly). GM é sempre preto.'''
+    n = len(teda.c)
+    if gcolor == 'index':
+        cmap = mpl.colormaps.get_cmap('plasma').resampled(max(n, 1))
+        cols = [tuple(cmap(i)) for i in range(n)]
+    elif gcolor == 'id':
+        cols = [tuple(_ID_PALETTE[(int(c.ID) - 1) % len(_ID_PALETTE)]) + (1.0,) if c.ID != 'GM' else None for c in teda.c]
+    else:
+        raise ValueError("gcolor deve ser 'index' ou 'id'.")
+    cols = [(0.0, 0.0, 0.0, 1.0) if c.ID == 'GM' else tuple(col)[:3] + (1.0,) for c, col in zip(teda.c, cols)]
+    if fmt == 'css':
+        return [f'rgb({int(round(255*r))}, {int(round(255*g))}, {int(round(255*b))})' for r, g, b, _ in cols]
+    return np.array(cols)
+
+def _TickText(v):
+    return f'{v:.10g}' if abs(v) > 1e-12 else '0'
+
+def _FitInside(fig, pad=0.03):
+    '''Aumenta as margens (subplots_adjust) até que todo o conteúdo (rótulos, legendas fora dos eixos) caiba na
+    figura de tamanho fixo w x h: substitui o corte 'tight', que mudaria o tamanho exibido. pad em polegadas.'''
+    eng = fig.get_layout_engine()
+    if eng is not None and 'Constrained' in type(eng).__name__:
+        import warnings
+        with warnings.catch_warnings(record=True) as ww:
+            warnings.simplefilter('always')
+            fig.canvas.draw()
+        if any('collapsed' in str(x.message) for x in ww):
+            W = fig.get_figwidth()
+            print(f'Aviso (PlotSimulation): a figura ({W:.1f} x {fig.get_figheight():.1f} pol nas colunas visíveis) é pequena '
+                  f'demais para os textos (tamanhos fixos em pt): rótulos podem se sobrepor. Aumente w e/ou h, '
+                  f'oculte colunas (HideCol) ou reduza SCREEN_DPI.')
+        return
+    W, H = fig.get_size_inches()
+    for _ in range(3):
+        renderer = fig.canvas.get_renderer()
+        bb = fig.get_tightbbox(renderer)                     # polegadas
+        lo, bo = max(0, -bb.x0 + pad), max(0, -bb.y0 + pad)
+        ro, to = max(0, bb.x1 - W + pad), max(0, bb.y1 - H + pad)
+        if max(lo, bo, ro, to) <= pad / 2: break
+        sp = fig.subplotpars
+        fig.subplots_adjust(left=sp.left + lo / W, bottom=sp.bottom + bo / H,
+                            right=sp.right - ro / W, top=sp.top - to / H)
+
+def _ShowPLT(fig):
+    '''Exibe a figura do matplotlib. No notebook (backend inline): PNG com largura exata w*SCREEN_DPI px (sem corte
+    'tight'), igual à largura da figura plotly; fora do notebook: plt.show().'''
+    inline = False
+    try:
+        from IPython import get_ipython
+        inline = get_ipython() is not None and 'inline' in mpl.get_backend().lower()
+    except Exception:
+        pass
+    if not inline:
+        plt.show()
+        return
+    import io
+    from IPython.display import Image, display
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=2*SCREEN_DPI, bbox_inches=None)     # 2x: nítido em telas de alta densidade
+    plt.close(fig)
+    display(Image(data=buf.getvalue(), width=int(round(fig.get_figwidth() * SCREEN_DPI))))
+
+
 def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
-                   mergeID=False, m1=4, m2=3, m3=1, ncol=4, HideCol=None, dsi_mode='last3'):
+                   mergeID=False, m1=4, m2=3, m3=1, ncol=4, HideCol=None, dsi_mode='last3', gcolor='index'):
     '''
     dsi_mode: tratamento de DSI com 4 ou mais atributos (RS com 4+ colunas)
         'last3': coluna 1 (granulação espacial 3D) usa apenas os 3 últimos atributos do DSI
@@ -1821,8 +1954,9 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         'hide' : oculta a coluna 1
     A coluna 2 mostra os ftrs últimos atributos (ftrs limitado à dimensão do DSI).
     '''
-    if w is None: w = 1500
-    if h is None: h = 450
+    if w is None: w = 15            # polegadas, como no modo 'plt' (convertido para px no layout)
+    if h is None: h = 4
+    S = _PlotSizes(m1, m2, m3)      # tamanhos em pt (mesmos do modo 'plt'), convertidos para px abaixo
     
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
@@ -1837,7 +1971,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         glabel = 'Centro-G'
 
     else:
-        title=['IEDs Spatial Granulation','IEDs Temporal Granulation','RUL and HI Predictions']
+        title=['DSI Spatial Granulation','DSI Temporal Granulation','RUL and HI Predictions']
         yAxisTitle=['DSI-X','DSI/Cycle','RUL/Cycle','HI/Cycle','WAPE/Cycle','WAPE/Cycle']
         xAxisTitle=['DSI-Y','Cycle','Cycle','Cycle','Cycle','Cycle']
         zAxisTitle=['DSI-Z','DSI/Cycle','RUL/Cycle']
@@ -1859,12 +1993,12 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         xAxisTitle[0], yAxisTitle[0], zAxisTitle[0] = f'{pfx}-{dim-2}', f'{pfx}-{dim-1}', f'{pfx}-{dim}'
 
     # Cores: 'plasma' amostrada por grânulo (equivalente ao cmap.resampled do PLT)
-    colors = px.colors.sample_colorscale('Plasma', np.linspace(0, 1, len(teda.c)))
+    colors = _GranuleColors(teda, 'css', gcolor)   # 'index' (plasma pela posição) ou 'id' (cor fixa por grânulo)
     black, gray, gridc = 'rgb(0, 0, 0)', '#d9d9d9', '#b0b0b0'
     cyan = 'rgba(0, 191, 191, 0.3)'
     colors2 = ['black', 'blue', 'blue', 'blue']
     dashes = ['solid', 'solid', 'dash', 'dash']
-    lnwdths = [0.75, 1.75, 1.75, 1.75]
+    lnwdths = [_px(v) for v in S['rul_lw']]
     mrkrs = [None, 'circle', None, None]
 
     xS = np.asarray(teda.t)
@@ -1884,7 +2018,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
     show = [c for c in ratios if c not in (HideCol or [])]
     if len(show) == 0: return
     gc = {c: k+1 for k, c in enumerate(show)}
-    w = int(w * sum(ratios[c] for c in show) / sum(ratios.values()))
+    w = w * sum(ratios[c] for c in show) / sum(ratios.values())
 
     # --- Grid: 2*ftrs linhas x colunas visíveis ---
     # Col 1: 3D (todas as linhas) | Col 2: ftrs subplots (2 linhas cada)
@@ -1897,10 +2031,24 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
     specs = [[cell[c](r) for c in show] for r in range(rows)]
     titles = {1: title[0], 2: title[1], 3: title[-1], 4: title_wape}
 
+    # Espaços em px calculados a partir das fontes (não de frações fixas): o título do eixo y e os rótulos dos
+    # ticks de cada gráfico cabem entre ele e a coluna à esquerda; rótulos de ticks de gráficos empilhados não se tocam
+    W_px, H_px = w * SCREEN_DPI, h * SCREEN_DPI
+    f_tick, f_lab, f_tit = _px(S['font']), _px(S['font_small']), _px(S['font_title'])   # ticks 10 pt, títulos 'small'
+    gap_x = 5 * 0.62 * f_tick + 1.3 * f_lab + 14            # até 5 caracteres de tick + título do eixo + folga
+    gap_y = 1.2 * f_tick                                     # meia altura de tick de cada lado
+    m_l = int(round(20 if 1 in show else gap_x))
+    m_r = 15
+    m_t = int(round(1.6 * f_tit + 12))
+    m_b = int(round(1.4 * f_tick + 1.4 * f_lab + 12 + (2 * _px(S['font']) if mergeID else 0)))
+    plot_w, plot_h = max(W_px - m_l - m_r, 1), max(H_px - m_t - m_b, 1)
+    hs = min(gap_x / plot_w, 0.9 / max(len(show) - 1, 1))
+    vs = min(gap_y / plot_h, 0.9 / max(rows - 1, 1))
     fig = make_subplots(rows=rows, cols=len(show), specs=specs,
                         column_widths=[ratios[c] for c in show],
                         subplot_titles=[titles[c] for c in show],
-                        horizontal_spacing=0.05, vertical_spacing=0.03)
+                        horizontal_spacing=hs, vertical_spacing=vs)
+    fig.update_annotations(font_size=_px(S['font_title']))          # títulos dos subplots (como axes.titlesize)
 
     # --- Coluna 1: Granulação espacial 3D ---
     def wireframe(a):
@@ -1919,24 +2067,24 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
 
             # Entrada da legenda do grânulo (clique liga/desliga o grânulo inteiro)
             fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers',
-                                       marker=dict(size=m2*2, color=color), name=name,
+                                       marker=dict(size=_spx(S['leg3d_s']), color=color), name=name,
                                        legendgroup=name, legend='legend'), **p3D)
 
             if not isGM:
                 pts = np.array(cloud.x)[:, -3:]
                 fig.add_trace(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], mode='markers',
-                                           marker=dict(size=m1, color=color, opacity=0.5),
+                                           marker=dict(size=_spx(S['pt3d_s']), color=color, opacity=0.5),
                                            name=name, **group), **p3D)
 
             # Eixos do grânulo (segmentos de comprimento 2R passando pelo centro)
             fig.add_trace(go.Scatter3d(x=[mx, mx, None, mx, mx, None, mx-r, mx+r],
                                        y=[my, my, None, my-r, my+r, None, my, my],
                                        z=[mz-r, mz+r, None, mz, mz, None, mz, mz],
-                                       mode='lines', line=dict(color=color, width=1), opacity=0.5,
+                                       mode='lines', line=dict(color=color, width=_px(S['axes3d_lw'])), opacity=0.5,
                                        hoverinfo='skip', **group), **p3D)
 
             fig.add_trace(go.Scatter3d(x=[mx], y=[my], z=[mz], mode='markers',
-                                       marker=dict(symbol='cross', size=m1*2, color=color),
+                                       marker=dict(symbol='cross', size=_spx(S['center_s'], S['center_lw']), color=color),
                                        name=f'{name} ({glabel})', **group), **p3D)
 
             # Hiperesfera: superfície + wireframe
@@ -1949,25 +2097,34 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
                                      opacity=0.05, showscale=False, hoverinfo='skip', **group),
                           **p3D)
             fig.add_trace(go.Scatter3d(x=wireframe(sx), y=wireframe(sy), z=wireframe(sz), mode='lines',
-                                       line=dict(color=color, width=1), opacity=0.3,
+                                       line=dict(color=color, width=_px(S['wire_lw'])), opacity=0.3,
                                        hoverinfo='skip', **group), **p3D)
 
         fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers',
-                                   marker=dict(symbol='cross', size=m1*2, color=black),
+                                   marker=dict(symbol='cross', size=_spx(S['center_s'], S['center_leg_lw']), color=black),
                                    name=glabel, legend='legend'), **p3D)
 
     # --- Coluna 2: Granulação temporal do IED ---
     if 2 in show:
+        # Escala comum a todos os atributos: mesmos [L, U] e ticks (e linhas de grade) do modo 'plt'
+        dL, dU, dticks = _DSIScale(teda, ftrs, h)
+        pfx = 'IED' if language == 'pt' else 'DSI'
+        mid = ftrs // 2
         for j in range(ftrs):
             pos = dict(row=2*j+1, col=gc[2])
             for i, cloud in enumerate(teda.c):
-                if cloud.ID == 'GM': continue
+                if cloud.ID == 'GM' or len(cloud.x) == 0: continue
                 y = np.array(cloud.x).T[-ftrs+j]
                 fig.add_trace(go.Scatter(x=cloud.t, y=y, mode='markers',
-                                         marker=dict(size=m2*1.5, color=colors[i]),
+                                         marker=dict(size=_mpx(S['dsi_ms']), color=colors[i]),
                                          name=f'G{cloud.ID}', showlegend=False), **pos)
-
-            fig.update_yaxes(title_text=yAxisTitle[1], tickvals=np.round(np.linspace(0, 1, 6), 2), **pos)
+            # Nome do atributo dentro do gráfico; título do eixo y só no gráfico do meio
+            fig.add_annotation(x=0.01, y=0.97, xref='x domain', yref='y domain', text=f'{pfx}-{dim-ftrs+j+1}',
+                               showarrow=False, xanchor='left', yanchor='top',
+                               font=dict(size=_px(S['font_small'])), **pos)
+            fig.update_yaxes(title_text=(yAxisTitle[1] if j == mid else None), range=[dL, dU],
+                             tickvals=dticks, ticktext=[_TickText(v) for v in dticks],
+                             tickfont=dict(size=_px(S['font_small'])), **pos)
             fig.update_xaxes(title_text=(xAxisTitle[1] if j == ftrs-1 else None),
                              showticklabels=(j == ftrs-1), **pos)
 
@@ -1984,17 +2141,17 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         for y, name, color, dash, lnwdth, mrkr in zip(yS, names, colors2, dashes, lnwdths, mrkrs):
             fig.add_trace(go.Scatter(x=xS, y=y, mode=('lines+markers' if mrkr else 'lines'),
                                      line=dict(color=color, width=lnwdth, dash=dash),
-                                     marker=dict(symbol=mrkr, size=m3*1.35*1.5, color=color),
+                                     marker=dict(symbol=mrkr, size=_mpx(S['rulP_ms']), color=color),
                                      name=name, showlegend=(name is not None), legend='legend2'), **pRUL)
         for y in (rulR*uL, rulR*uU):
-            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='black', width=0.75),
+            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='black', width=_px(S['tol_lw'])),
                                      showlegend=False, legend='legend2'), **pRUL)
         band(rulR*uL, rulR*uU, Tolerance, 'rgba(0, 0, 0, 0.15)', 'legend2', pRUL)
         band(rulL, rulU, Uncertainty, cyan, 'legend2', pRUL)
 
         for i, cloud in enumerate(teda.c):
             fig.add_trace(go.Scatter(x=cloud.t2, y=cloud.rulM, mode='markers',
-                                     marker=dict(symbol='circle', size=m3*2.5, color=colors[i]),
+                                     marker=dict(symbol='circle', size=_mpx(S['gran_ms']), color=colors[i]),
                                      name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
                                      showlegend=False, legend='legend2'), **pRUL)
 
@@ -2008,16 +2165,16 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         xc = xi + 0.05*(xf-xi)
 
         fig.add_annotation(x=xc, y=yc, text=title_rul, showarrow=False, xanchor='left',
-                           yanchor='bottom', font=dict(size=13), **pRUL)
+                           yanchor='bottom', font=dict(size=_px(S['font'])), **pRUL)
         fig.update_xaxes(range=[xi, xf], showticklabels=False, ticks='', **pRUL)
         fig.update_yaxes(range=[yi, yf], title_text=yAxisTitle[2], **pRUL)
 
-        fig.add_trace(go.Scatter(x=xS, y=hiR, mode='lines', line=dict(color='black', width=2),
+        fig.add_trace(go.Scatter(x=xS, y=hiR, mode='lines', line=dict(color='black', width=_px(S['hiR_lw'])),
                                  name='HI-R', legend='legend3'), **pHI)
-        fig.add_trace(go.Scatter(x=xS, y=hiP, mode='lines+markers', line=dict(color='blue', width=1.75),
-                                 marker=dict(size=m3*1.5, color='blue'), name='HI-P', legend='legend3'), **pHI)
+        fig.add_trace(go.Scatter(x=xS, y=hiP, mode='lines+markers', line=dict(color='blue', width=_px(S['hiP_lw'])),
+                                 marker=dict(size=_mpx(S['hiP_ms']), color='blue'), name='HI-P', legend='legend3'), **pHI)
         for y in (hiL, hiU):
-            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='blue', width=1.75, dash='dash'),
+            fig.add_trace(go.Scatter(x=xS, y=y, mode='lines', line=dict(color='blue', width=_px(S['hiLU_lw']), dash='dash'),
                                      showlegend=False, legend='legend3'), **pHI)
         band(hiL, hiU, Uncertainty, cyan, 'legend3', pHI)
         # HI previsto pintado com a cor de cada grânulo ativado no passo (como na RUL)
@@ -2025,7 +2182,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
             hiM = getattr(cloud, 'hiM', [])
             if len(hiM) == len(cloud.t2) and len(hiM) > 0:
                 fig.add_trace(go.Scatter(x=cloud.t2, y=hiM, mode='markers',
-                                         marker=dict(symbol='circle', size=m3*2.5, color=colors[i]),
+                                         marker=dict(symbol='circle', size=_mpx(S['gran_ms']), color=colors[i]),
                                          name=('GM' if cloud.ID == 'GM' else f'G{cloud.ID}'),
                                          showlegend=False, legend='legend3'), **pHI)
 
@@ -2036,7 +2193,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         yc = yi2 + 0.1*(yf2-yi2)
 
         fig.add_annotation(x=xc, y=yc, text=title_hi, showarrow=False, xanchor='left',
-                           yanchor='bottom', font=dict(size=13), **pHI)
+                           yanchor='bottom', font=dict(size=_px(S['font'])), **pHI)
         fig.update_xaxes(range=[xi, xf], title_text=xAxisTitle[3], **pHI)
         fig.update_yaxes(range=[yi2, yf2], title_text=yAxisTitle[3], **pHI)
 
@@ -2047,36 +2204,41 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
         for hist, label, color, pos in ((teda.wape_RUL_hist, wapes[0], 'blue', pWR),
                                         (teda.wape_HI_hist, wapes[1], 'red', pWH)):
             fig.add_trace(go.Scatter(x=xS[:end], y=hist[:end], mode='lines',
-                                     line=dict(color=color, width=1.75), name=label,
+                                     line=dict(color=color, width=_px(S['wape_lw'])), name=label,
                                      showlegend=False), **pos)
             fig.add_annotation(x=0.55, y=0.85, xref='x domain', yref='y domain', text=label,
                                showarrow=False, xanchor='left', yanchor='bottom',
-                               font=dict(size=13), **pos)
+                               font=dict(size=_px(S['font'])), **pos)
             fig.add_annotation(x=xS[-1], y=hist[-1], text=f'{hist[-1]:.3f}', showarrow=True,
-                               arrowhead=2, arrowsize=1, arrowwidth=1, ax=-35, ay=30,
-                               font=dict(size=11), **pos)
+                               arrowhead=2, arrowsize=1, arrowwidth=_px(S['axes_lw']), ax=-35, ay=30,
+                               font=dict(size=_px(S['font_small'])), **pos)
             fig.update_yaxes(title_text=yAxisTitle[4], **pos)
         fig.update_xaxes(showticklabels=False, ticks='', **pWR)
         fig.update_xaxes(title_text=xAxisTitle[5], **pWH)
 
     # --- Layout geral ---
-    fig.update_xaxes(showgrid=True, gridcolor=gridc, zeroline=False,
-                     showline=True, linecolor='black', mirror=True)
-    fig.update_yaxes(showgrid=True, gridcolor=gridc, zeroline=False,
-                     showline=True, linecolor='black', mirror=True)
+    axes_style = dict(showgrid=True, gridcolor=gridc, gridwidth=_px(S['grid_lw']), zeroline=False,
+                      showline=True, linecolor='black', linewidth=_px(S['axes_lw']), mirror=True,
+                      tickfont=dict(size=f_tick), title_font=dict(size=f_lab), title_standoff=4)
+    fig.update_xaxes(**axes_style)
+    fig.update_yaxes(**{k: v for k, v in axes_style.items() if k != 'tickfont'})   # y: preserva a fonte da coluna 2
+    for r_ in range(1, rows + 1):
+        for c_ in [gc[c] for c in show if c != 1]:
+            if c_ == gc.get(2): continue
+            fig.update_yaxes(tickfont=dict(size=f_tick), row=r_, col=c_)
     for c in (3, 4):
         if c not in show: continue
         for row in (1, ftrs+1):
             fig.update_xaxes(griddash='dash', row=row, col=gc[c])
             fig.update_yaxes(griddash='dash', row=row, col=gc[c])
 
-    boxed = dict(bordercolor='#888', borderwidth=1, font=dict(size=10))
+    boxed = dict(bordercolor='#888', borderwidth=_px(S['axes_lw']), font=dict(size=_px(S['font_small'])))
     legends = {}
 
     # Legendas: 3D abaixo da cena (ncol colunas), RUL e HI no canto superior direito
     if 1 in show:
         axis3d = dict(backgroundcolor=gray, showbackground=True, gridcolor='gray',
-                      title_font=dict(size=11))
+                      title_font=dict(size=_px(S['font_small'])))
         fig.update_scenes(xaxis=dict(title_text=xAxisTitle[0], **axis3d),
                           yaxis=dict(title_text=yAxisTitle[0], **axis3d),
                           zaxis=dict(title_text=zAxisTitle[0], **axis3d),
@@ -2095,17 +2257,18 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
                                   bgcolor='rgba(255, 255, 255, 0.8)', **boxed)
 
     fig.update_layout(
-        width=w, height=h,
+        width=int(round(w * SCREEN_DPI)), height=int(round(h * SCREEN_DPI)),   # polegadas -> px
+        font=dict(size=_px(S['font'])),
         template='plotly_white',
         plot_bgcolor=gray,
         paper_bgcolor='white',
-        margin=dict(l=20, r=20, t=50, b=(70 if mergeID else 40)),
+        margin=dict(l=m_l, r=m_r, t=m_t, b=m_b),
         **legends
     )
 
     if mergeID:
         fig.add_annotation(text=merged_track, xref='paper', yref='paper', x=0.5, y=0,
-                           yshift=-45, showarrow=False, font=dict(size=12, color='black'),
+                           yshift=-45, showarrow=False, font=dict(size=_px(S['font']), color='black'),
                            xanchor='center', yanchor='top')
 
     if out is not None:
@@ -2116,7 +2279,7 @@ def PlotDSI_3D_PLY(teda, uncertainty=0.25, w=None, h=None,
 def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                     yi=None,yf=None,yi2=None,yf2=None,
                     xi=None,xf=None,ftrs=3, out=None, language='en',
-             mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+             mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3', gcolor='index'):
     '''
     dsi_mode: tratamento de DSI com 4 ou mais atributos (RS com 4+ colunas)
         'last3': coluna 1 (granulação espacial 3D) usa apenas os 3 últimos atributos do DSI
@@ -2127,6 +2290,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
     if w is None: w = 15
 
     if h is None: h = 4
+    S = _PlotSizes(m1, m2, m3)      # tamanhos em pt, compartilhados com o modo 'ply'
 
     if language == 'pt':
         title=['Granulação Espacial do IED','Granulação Temporal do IED','Predições de RUL e HI']
@@ -2164,13 +2328,12 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
 
     L,U = np.inf,-np.inf
     mid = ftrs // 2
-    cmap = mpl.colormaps.get_cmap('plasma').resampled(len(teda.c))
-    colors = (np.array([cmap(i) for i in range(len(teda.c))]))
+    colors = _GranuleColors(teda, 'rgba', gcolor)  # 'index' (plasma pela posição) ou 'id' (cor fixa por grânulo)
     colors2 = ['black', 'blue', 'blue', 'blue']
     lnstls = ['-', '-', '--', '--']
-    lnwdths = [0.5,1.25,1.25,1.25]
+    lnwdths = S['rul_lw']
     mrkrs = [None, 'o', None,None]
-    mrkrszs = [None,m3*1.35, None, None]
+    mrkrszs = [None, S['rulP_ms'], None, None]
     yS = [teda.rulR,teda.rulP,teda.rulL,teda.rulU]
     xS = teda.t
 
@@ -2194,12 +2357,12 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
     gc = {c: k for k, c in enumerate(show)}
     w = w * sum(ratios[c] for c in show) / sum(ratios.values())
 
-    fig = plt.figure(figsize=(w, h))
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.88, bottom=0.12,
-                    wspace=0.12, hspace=0.5)
+    # Layout 'constrained': mede rótulos, títulos e legendas e ajusta os espaços para que nada se sobreponha
+    # (vale para qualquer w, h); w_pad/h_pad = folga mínima em polegadas
+    fig = plt.figure(figsize=(w, h), layout='constrained')
+    fig.get_layout_engine().set(w_pad=4/72, h_pad=3/72, wspace=0.02, hspace=0.02)
 
-    gs = fig.add_gridspec(nrows=ftrs, ncols=len(show), width_ratios=[ratios[c] for c in show],
-                            wspace=0.25, hspace=0.3)
+    gs = fig.add_gridspec(nrows=ftrs, ncols=len(show), width_ratios=[ratios[c] for c in show])
     if 1 in show:
         ax1 = fig.add_subplot(gs[:, gc[1]], projection='3d')
     if 2 in show:
@@ -2245,22 +2408,22 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                     x_,y_,z_ = m
                     ax1.plot(x_,y_,z_,
                              color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                             linewidth=0.5,alpha=0.5,)
+                             linewidth=S['axes3d_lw'],alpha=0.5,)
 
                 x = x[-3:]
                 ax1.scatter(x[0], x[1], x[2],
                     color=(colors[i] if cloud.ID != 'GM' else 'black'),
                       alpha=0.5, marker='o',
-                      s=(m1*3 if cloud.ID != 'GM' else 0.00001))
+                      s=(S['pt3d_s'] if cloud.ID != 'GM' else 0.00001))
 
 
             center = cloud.mean[-3:]
             ax1.scatter([], [], [],label=(f'G{cloud.ID}' if cloud.ID != 'GM' else 'GM'),
                         color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                          marker='o', s=m2*5)
+                          marker='o', s=S['leg3d_s'])
             ax1.scatter(center[0], center[1], center[2],
                         color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                          marker='+', s=m1*25,linewidths=0.5)
+                          marker='+', s=S['center_s'],linewidths=S['center_lw'])
 
             if radii is not None :
                 r = radii[i]
@@ -2275,10 +2438,10 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                                 linewidth=0, antialiased=True)
                 ax1.plot_wireframe(x, y, z,
                                    color=(colors[i] if cloud.ID != 'GM' else 'black'),
-                                     alpha=0.3, linewidth=0.4)
+                                     alpha=0.3, linewidth=S['wire_lw'])
 
 
-        ax1.scatter([], [], [], color='black', marker='+', s=m1*25,linewidths=0.75, label=glabel)
+        ax1.scatter([], [], [], color='black', marker='+', s=S['center_s'],linewidths=S['center_leg_lw'], label=glabel)
         ax1.set_title(title[0])
         ax1.set_xlabel(xAxisTitle[0], fontsize='small')
         ax1.set_ylabel(yAxisTitle[0], fontsize='small')
@@ -2295,26 +2458,26 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
         ax1.grid(color='gray', linestyle='--', linewidth=0.5)
 
     if 2 in show:
+        # Escala comum a todos os atributos: mesmos [L, U] e ticks (e linhas de grade) do modo 'ply'
+        dL, dU, dticks = _DSIScale(teda, ftrs, h)
+        pfx = 'IED' if language == 'pt' else 'DSI'
         for j,ax in enumerate(ax2):
-            L,U = np.inf,-np.inf
             for i, cloud in enumerate(teda.c):
-                if cloud.ID == 'GM': continue
+                if cloud.ID == 'GM' or len(cloud.x) == 0: continue
                 y = np.array(cloud.x).T[-ftrs+j]
                 ax.plot(cloud.t, y, linestyle=' ', marker='o',
-                        markersize=m2, label=None, color=colors[i])
+                        markersize=S['dsi_ms'], label=None, color=colors[i])
 
-                if L>np.min(y): L = np.min(y) - 1.15*np.min(y)
-                if U<np.max(y): U = np.max(y) + 0.15*np.max(y)
-
-            yticks = np.round(np.linspace(0, 1, 6), 2).tolist()[1:] + [0]
-            ax.set_yticks(sorted(yticks))
-            #ax.set_ylim(L-0.05*U, U+0.05*U)
-            ax.set_xlabel(xAxisTitle[1], fontsize='small')
-            ax.set_ylabel(yAxisTitle[1], fontsize='small')
-
-            if j< len(ax2)-1:
-                ax.set_xlabel('')
-                ax.tick_params(labelleft=False,labelsize=0.1,axis='x',colors='1',)
+            ax.set_ylim(dL, dU)
+            ax.set_yticks(dticks, [_TickText(v) for v in dticks])
+            ax.tick_params(axis='y', labelsize='small')
+            # Nome do atributo dentro do gráfico; título do eixo y só no gráfico do meio (não invade os vizinhos)
+            ax.text(0.01, 0.95, f'{pfx}-{dim-ftrs+j+1}', transform=ax.transAxes, ha='left', va='top', fontsize='small')
+            ax.set_ylabel(yAxisTitle[1] if j == mid else '', fontsize='small')
+            if j < len(ax2)-1:
+                ax.tick_params(axis='x', labelbottom=False)
+            else:
+                ax.set_xlabel(xAxisTitle[1], fontsize='small')
             if j==0: ax.set_title(title[1])
             ax.set_facecolor("#d9d9d9")
             ax.grid()
@@ -2324,8 +2487,8 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
             ax3.plot(xS, y, label=name, linestyle=linestyle, linewidth=linewidth,
                      marker=marker,markersize=markersize,
                      color=color)
-        ax3.plot(xS, teda.rulR*uL, label=None, linestyle='-', linewidth=0.5, color='black')
-        ax3.plot(xS, teda.rulR*uU, label=None, linestyle='-', linewidth=0.5, color='black')
+        ax3.plot(xS, teda.rulR*uL, label=None, linestyle='-', linewidth=S['tol_lw'], color='black')
+        ax3.plot(xS, teda.rulR*uU, label=None, linestyle='-', linewidth=S['tol_lw'], color='black')
         ax3.fill_between(xS, teda.rulR*uL, teda.rulR*uU,
                              label=Tolerance,
                              color ='black',alpha=.15,)
@@ -2334,7 +2497,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                              color ='c',alpha=.3,)
 
         for i, cloud in enumerate(teda.c):
-            ax3.plot(cloud.t2,cloud.rulM, linestyle=' ', marker='*', markersize=m3, color=colors[i], label=None)
+            ax3.plot(cloud.t2,cloud.rulM, linestyle=' ', marker='*', markersize=S['gran_ms'], color=colors[i], label=None)
 
 
 
@@ -2359,10 +2522,10 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
         ax3.grid(True, linestyle='--', alpha=0.6)
         ax3.legend(frameon=True,loc='upper right', fontsize='small',ncols=1)
 
-        ax4.plot(xS, teda.hiR, label='HI-R', linestyle='-', linewidth=1.5, color='black')
-        ax4.plot(xS, teda.hiP, label='HI-P', linestyle='-',marker='o',markersize=m3, linewidth=1.25, color='blue')
-        ax4.plot(xS, teda.hiL, label=None, linestyle='--', linewidth=1.25, color='blue')
-        ax4.plot(xS, teda.hiU, label=None, linestyle='--', linewidth=1.25, color='blue')
+        ax4.plot(xS, teda.hiR, label='HI-R', linestyle='-', linewidth=S['hiR_lw'], color='black')
+        ax4.plot(xS, teda.hiP, label='HI-P', linestyle='-',marker='o',markersize=S['hiP_ms'], linewidth=S['hiP_lw'], color='blue')
+        ax4.plot(xS, teda.hiL, label=None, linestyle='--', linewidth=S['hiLU_lw'], color='blue')
+        ax4.plot(xS, teda.hiU, label=None, linestyle='--', linewidth=S['hiLU_lw'], color='blue')
         ax4.fill_between(xS, teda.hiL, teda.hiU,
                                  label=Uncertainty,
                                  color ='c',alpha=.3,)
@@ -2370,7 +2533,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
         for i, cloud in enumerate(teda.c):
             hiM = getattr(cloud, 'hiM', [])
             if len(hiM) == len(cloud.t2) and len(hiM) > 0:
-                ax4.plot(cloud.t2, hiM, linestyle=' ', marker='*', markersize=m3, color=colors[i], label=None)
+                ax4.plot(cloud.t2, hiM, linestyle=' ', marker='*', markersize=S['gran_ms'], color=colors[i], label=None)
 
         hiL = np.min(teda.hiL[int(0.2*len(xS)):])
         hiU = np.max(teda.hiU[int(0.2*len(xS)):])
@@ -2403,7 +2566,7 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                     arrowprops=dict(facecolor='black', shrink=0.05, width=0.01,headwidth=5,headlength=5),
                     horizontalalignment='right',
                     verticalalignment='top')
-        ax5.plot(xS[:end],teda.wape_RUL_hist[:end], label=wapes[1], linestyle='-', linewidth=1.25, color='blue')
+        ax5.plot(xS[:end],teda.wape_RUL_hist[:end], label=wapes[1], linestyle='-', linewidth=S['wape_lw'], color='blue')
         ax5.set_title(title_wape)
         ax5.set_xlabel(None)
         ax5.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
@@ -2422,15 +2585,16 @@ def PlotDSI_3D_PLT(teda,uncertainty=0.25, w=None, h=None,
                 verticalalignment='top')
 
                 #arrowprops=dict(facecolor='black', width=0.01,headwidth=5))
-        ax6.plot(xS[:end],teda.wape_HI_hist[:end], label=wapes[0], linestyle='-', linewidth=1.25, color='red')
+        ax6.plot(xS[:end],teda.wape_HI_hist[:end], label=wapes[0], linestyle='-', linewidth=S['wape_lw'], color='red')
         ax6.set_ylabel(yAxisTitle[5], fontsize='small')
         ax6.set_xlabel(xAxisTitle[5], fontsize='small')
         ax6.set_facecolor("#d9d9d9")
         ax6.grid(True, linestyle='--', alpha=0.6)
     if mergeID: fig.text(0.5, 0.1, merged_track, fontsize=10, ha='center', va='bottom', transform=fig.transFigure)
+    _FitInside(fig)                 # todo o conteúdo dentro da figura w x h (exibição e arquivo)
     if out is not None and title is not None:
         plt.savefig(out, dpi=500, transparent=False)
-    plt.show()
+    _ShowPLT(fig)                   # notebook: largura exata w*SCREEN_DPI px (mesmo tamanho do modo 'ply')
 
 
 
@@ -2594,7 +2758,9 @@ def PlotGranulesSpace(teda, mode='markers',hold=False,
 def PlotSimulation(teda, mode='plt', uncertainty=0.25, w=None, h=None,
                    yi=None, yf=None, yi2=None, yf2=None,
                    xi=None, xf=None, ftrs=3, out=None, language='en',
-                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3'):
+                   mergeID=False, m1=4, m2=3, m3=3, ncol=4, HideCol=None, dsi_mode='last3', gcolor='index'):
+    '''gcolor: cores dos grânulos -> 'index' (padrão: mapa plasma distribuído pelos grânulos do gráfico) ou
+    'id' (cor fixa por ID, paleta categórica: o mesmo grânulo tem a mesma cor em todos os gráficos).'''
 
     # Sem predições (ex.: SimGranulation): oculta as colunas 3 (RUL/HI) e 4 (WAPE)
     if len(teda.rulP) == 0:
@@ -2602,17 +2768,17 @@ def PlotSimulation(teda, mode='plt', uncertainty=0.25, w=None, h=None,
 
     if mode == 'plt':
         PlotDSI_3D_PLT(teda, uncertainty, w, h, yi, yf, yi2, yf2,
-                   xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode)
+                   xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode, gcolor)
     elif mode == 'ply':
         PlotDSI_3D_PLY(teda, uncertainty, w, h, yi, yf, yi2, yf2,
-                       xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode)
+                       xi, xf, ftrs, out, language, mergeID, m1, m2, m3, ncol, HideCol, dsi_mode, gcolor)
 
 def PlotGranulation(teda, mode='plt', w=None, h=None, ftrs=3, out=None, language='en',
-                    mergeID=False, m1=4, m2=3, ncol=4, dsi_mode='last3'):
+                    mergeID=False, m1=4, m2=3, ncol=4, dsi_mode='last3', gcolor='index'):
     '''
     Resultado de SimGranulation: granulação espacial 3D (coluna 1) e temporal (coluna 2) do DSI.
     mode: 'plt' (matplotlib) ou 'ply' (plotly). dsi_mode: 'last3' (3D com os 3 últimos atributos de DSI com 4+)
     ou 'hide' (oculta o 3D). As colunas de predição (RUL/HI) e WAPE são sempre ocultadas.
     '''
     PlotSimulation(teda, mode=mode, w=w, h=h, ftrs=ftrs, out=out, language=language,
-                   mergeID=mergeID, m1=m1, m2=m2, ncol=ncol, HideCol=[3, 4], dsi_mode=dsi_mode)
+                   mergeID=mergeID, m1=m1, m2=m2, ncol=ncol, HideCol=[3, 4], dsi_mode=dsi_mode, gcolor=gcolor)

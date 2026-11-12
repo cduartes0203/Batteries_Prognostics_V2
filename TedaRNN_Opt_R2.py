@@ -79,7 +79,7 @@ IMAGES = 'IMAGES'
 def LoadData(bearings):
     data = []
     for b in bearings:
-        rs_path, hi_path = os.path.join('Dataset', 'DSIR1n', f'B{b}.csv'), os.path.join('Dataset', 'HI4', f'Bearing{b}.csv')
+        rs_path, hi_path = os.path.join('Dataset', 'DSIR1n', f'B{b}.csv'), os.path.join('Dataset', 'HI1', f'Bearing{b}.csv')
         for p in (rs_path, hi_path):
             if not os.path.exists(p): raise FileNotFoundError(f'{p} não encontrado (rolamento {b}).')
         data.append((f'B{b}', pd.read_csv(rs_path), pd.read_csv(hi_path)))
