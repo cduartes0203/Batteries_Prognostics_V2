@@ -1,0 +1,27 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "exclude": [
+    ".venv",
+    "**/__pycache__",
+    "OLD",
+    "Optimization",
+    "Optimization1",
+    "IMAGES",
+    "Dataset",
+    "Functions/TedaGraphs copy.py"
+  ],
+  "reportWildcardImportFromLibrary": "none",
+  "reportArgumentType": "none",
+  "reportCallIssue": "none",
+  "reportOperatorIssue": "none",
+  "reportIndexIssue": "none",
+  "reportOptionalOperand": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalIterable": "none",
+  "reportReturnType": "none",
+  "reportAssignmentType": "none"
+}
