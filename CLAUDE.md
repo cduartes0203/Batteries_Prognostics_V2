@@ -57,7 +57,7 @@ Metrics: `wape_RUL`, `wape_HI` (point predictions), `V`, `cov`, `sp` (interval q
 - `HI1/Bearing<b>.csv`: health index, column `PC1`. Model target. EoL when HI ≤ 0.3.
 - `DSIR1`, `DSIR4`, `DSIR4n`, `HI4`, `FleetR1`, `SpecR4` (.npz): other revisions or intermediate products.
 - XJTU-SY: fs = 25600 Hz; conditions 1/2/3 = 35/37.5/40 Hz shaft speed, 12/11/10 kN load.
-- **`*.csv` is git-ignored**: datasets and `Optimization.csv` results are NOT under version control.
+- CSV datasets and `Optimization.csv` results are under version control; `optuna.db` (`*.db`) is git-ignored.
 - Note: the `TedaRNN_Opt_R2.py` docstring says `HI4`, but the code loads `HI1`.
 
 ## Results
