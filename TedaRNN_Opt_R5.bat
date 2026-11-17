@@ -6,6 +6,8 @@ rem     TedaRNN_Opt_R5.bat --bearings 1_1 1_2 --instancia teste1 --sampler tpe -
 rem Ajuda: TedaRNN_Opt_R5.bat --help
 rem Com paralelo = 1, esta janela abre uma janela por par de n. de camadas, espera todas, gera o Optimization.csv
 rem e (etapa all) executa a etapa plot. Substitui o TedaRNN_Opt_R3_Par.bat.
+rem workers = janelas (processos) por par de n. de camadas, nos mesmos estudos; n_trials e dividido entre elas.
+rem    Ex.: nLS 1 6 e workers 4 -> 12 janelas. Use no maximo ~1 processo por nucleo do processador.
 rem wS = faixa da janela w do DSI em X_k (ex.: 1 5); 0 = nao otimizar (w = 1 fixo).
 setlocal
 cd /d "%~dp0"
@@ -30,6 +32,7 @@ set "TMO=3600"
 set "MS=1.75 2.05"
 set "NLS=1 2"
 set "PAR=1"
+set "WRK=4"
 set "NIS=2 40"
 set "NRS=1 75"
 set "NOS=1 40"
@@ -55,6 +58,7 @@ set /p "STATE=Estado das RNNs no inicio de cada rolamento seguinte: keep, reset,
 set /p "MS=mS, faixa de m [%MS%]: "
 set /p "NLS=nLS, faixa do n. de camadas [%NLS%]: "
 set /p "PAR=Janelas em paralelo, uma por par de n. de camadas (ex.: nLS 1 6 -> 1-2, 3-4, 5-6): 1 = sim, 0 = nao [%PAR%]: "
+set /p "WRK=workers: janelas por par de n. de camadas, nos mesmos estudos (com paralelo = 1) [%WRK%]: "
 set /p "NIS=nIS, faixa de nI [%NIS%]: "
 set /p "NRS=nRS, faixa de neuronios por camada [%NRS%]: "
 set /p "NOS=nOS, faixa de nO (valores futuros de Z_k) [%NOS%]: "
@@ -71,7 +75,7 @@ echo   instancia  = %INST%   (resultados em Optimization\TedaRNN_Opt_R5_%INST%_.
 echo   OptSampler = %SAMP%   OptSeed = %SEED%   OptPrune = %PRUNE%
 echo   n_study    = %NST%   n_trials = %NTR%   patience = %PAT%   timeout = %TMO%
 echo   mS         = %MS%
-echo   nLS        = %NLS%   paralelo = %PAR%
+echo   nLS        = %NLS%   paralelo = %PAR%   workers = %WRK%  (n_trials dividido entre os workers)
 echo   nIS        = %NIS%
 echo   nRS        = %NRS%
 echo   nOS        = %NOS%
@@ -86,7 +90,7 @@ if /i not "%OK%"=="S" (
     goto fim
 )
 echo.
-".venv\Scripts\python.exe" -X utf8 TedaRNN_Opt_R5.py --bearings %BRG% --state %STATE% --agg %AGG% --stage %STG% --instancia "%INST%" --sampler %SAMP% --seed %SEED% --prune %PRUNE% --n_study %NST% --n_trials %NTR% --patience %PAT% --timeout %TMO% --mS %MS% --nLS %NLS% --par %PAR% --nIS %NIS% --nRS %NRS% --nOS %NOS% --mOS %MOS% %WARG% --rho %RHO% --intr_state %IST%
+".venv\Scripts\python.exe" -X utf8 TedaRNN_Opt_R5.py --bearings %BRG% --state %STATE% --agg %AGG% --stage %STG% --instancia "%INST%" --sampler %SAMP% --seed %SEED% --prune %PRUNE% --n_study %NST% --n_trials %NTR% --patience %PAT% --timeout %TMO% --mS %MS% --nLS %NLS% --par %PAR% --workers %WRK% --nIS %NIS% --nRS %NRS% --nOS %NOS% --mOS %MOS% %WARG% --rho %RHO% --intr_state %IST%
 
 :fim
 echo.

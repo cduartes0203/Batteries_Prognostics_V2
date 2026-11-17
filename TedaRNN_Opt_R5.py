@@ -7,7 +7,15 @@ Mudanças em relação ao R4:
     - usa TedaOptimize_V4_8: a janela do DSI em X_k (w, PrepareData) pode ser otimizada com --wS MIN MAX
       (inteiros >= 1), como as demais faixas. Sem --wS, w = 1 fixo (como no R4). O mesmo w vale para todos os
       rolamentos do trial; o Optimization.csv ganha a coluna w e a etapa plot usa o w da melhor linha;
-    - gráficos em IMAGES\\TedaRNN_Opt_R5\\ (pasta com o nome deste script).
+    - gráficos em IMAGES\\TedaRNN_Opt_R5\\ (pasta com o nome deste script);
+    - --workers N: N processos (janelas) por par de nº de camadas, todos nos MESMOS estudos do optuna.db
+      (OptimizeSeq com worker/n_workers): o Optuna distribui os trials entre eles. Ex.: --nLS 1 6 --workers 4 ->
+      12 janelas (4 para nL 1-2, 4 para 3-4 e 4 para 5-6). --n_trials continua sendo o total por sessão e por nº de
+      camadas nesta execução: cada worker recebe ceil(n_trials / N). --timeout e --patience valem por worker
+      (patience: trials do worker sem melhora do estudo, considerando os trials de todos os workers).
+      Cada worker usa 1 thread; use no máximo ~1 processo por núcleo (os.cpu_count()). Com mais de 4 janelas,
+      elas abrem minimizadas na barra de tarefas. Janela concluída fecha sozinha; com erro, espera Enter.
+      --workers só vale com --par 1.
 
 Mudanças do R4 em relação ao R3:
     - usa TedaOptimize_V4_7: a semente do sampler depende também dos trials já armazenados no estudo, de modo que
@@ -95,7 +103,12 @@ parser.add_argument("--intr_state", default="carry", choices=['carry', 'reset'],
                     help="estado intervalar da RUL intervalar, etapa plot (padrão: carry)")
 parser.add_argument("--par", default=1, type=int, choices=[0, 1],
                     help="etapa model: 1 = uma janela por par de nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
+parser.add_argument("--workers", default=1, type=int,
+                    help="etapa model em paralelo: processos (janelas) por par de nº de camadas, todos nos mesmos estudos; "
+                         "--n_trials é dividido entre eles (padrão: 1)")
 parser.add_argument("--done", default=None, help=argparse.SUPPRESS)   # uso interno: janela de uma faixa (arquivo de término)
+parser.add_argument("--worker", default=0, type=int, help=argparse.SUPPRESS)      # uso interno: nº do worker (0, 1, ...)
+parser.add_argument("--n_workers", default=1, type=int, help=argparse.SUPPRESS)   # uso interno: workers por estudo
 args = parser.parse_args()
 
 def check(name, r, low):
@@ -109,6 +122,7 @@ check('nOS', args.nOS, 1)
 check('mOS', args.mOS, 0)
 if args.wS is not None: check('wS', args.wS, 1)
 if args.n_trials < 1 or args.n_study < 1: parser.error('n_trials e n_study devem ser >= 1')
+if args.workers < 1: parser.error('workers deve ser >= 1')
 if args.rho < 0: parser.error('rho deve ser >= 0')
 if len(args.bearings) < 2: parser.error('--bearings: informe pelo menos dois rolamentos')
 if len(set(args.bearings)) != len(args.bearings): parser.error('--bearings: rolamentos repetidos')
@@ -146,7 +160,8 @@ def StageModel(data):
                 n_study=args.n_study, n_trials=args.n_trials, patience=args.patience, timeout=args.timeout,
                 mS=args.mS, nLS=args.nLS, nIS=args.nIS, nRS=args.nRS, nOS=args.nOS, mOS=args.mOS,
                 feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, eol=EOL, w=W, wS=args.wS, agg=args.agg, state=args.state,
-                OptReset=False, folder=FOLDER, write_table=bool(args.table))
+                OptReset=False, folder=FOLDER, write_table=bool(args.table),
+                worker=args.worker, n_workers=args.n_workers)
 
 
 def Faixas(lo, hi):
@@ -154,41 +169,57 @@ def Faixas(lo, hi):
     return [[a, min(a + 1, hi)] for a in range(lo, hi + 1, 2)]
 
 
-def WorkerArgv(nl, done):
-    # Mesmos argumentos desta execução; a janela roda só a etapa model da sua faixa, sem gravar o Optimization.csv
+def WorkerArgv(nl, done, k, n_trials):
+    # Mesmos argumentos desta execução; a janela roda só a etapa model da sua faixa (worker k de args.workers),
+    # sem gravar o Optimization.csv
     a = args
     s = lambda v: [str(x) for x in v]
     return [sys.executable, '-X', 'utf8', os.path.abspath(__file__),
             '--bearings', *a.bearings, '--state', a.state, '--agg', a.agg, '--stage', 'model', '--table', '0', '--par', '0',
             '--instancia', a.instancia, '--sampler', a.sampler, '--seed', str(a.seed), '--prune', str(a.prune),
-            '--n_study', str(a.n_study), '--n_trials', str(a.n_trials), '--patience', str(a.patience),
+            '--n_study', str(a.n_study), '--n_trials', str(n_trials), '--patience', str(a.patience),
             '--timeout', str(a.timeout), '--mS', *s(a.mS), '--nLS', *s(nl), '--nIS', *s(a.nIS), '--nRS', *s(a.nRS),
-            '--nOS', *s(a.nOS), '--mOS', *s(a.mOS), *(['--wS', *s(a.wS)] if a.wS is not None else []), '--done', done]
+            '--nOS', *s(a.nOS), '--mOS', *s(a.mOS), *(['--wS', *s(a.wS)] if a.wS is not None else []),
+            '--worker', str(k), '--n_workers', str(a.workers), '--done', done]
 
 
 def StageModelPar(data):
-    '''Etapa model com uma janela por par de nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
+    '''Etapa model com args.workers janelas por par de nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
     faixas = Faixas(*args.nLS)
-    if len(faixas) == 1 or os.name != 'nt':
+    nW = args.workers
+    if len(faixas) * nW == 1 or os.name != 'nt':
         if os.name != 'nt': print('Janelas em paralelo disponíveis apenas no Windows: execução nesta janela.')
         StageModel(data)
         return
-    ctrl = tempfile.mkdtemp(prefix=f'{ScriptName}_Par_')              # arquivos <faixa>.done (fim de cada janela)
+    n_jobs = len(faixas) * nW
+    n_tr = -(-args.n_trials // nW)                                     # n_trials dividido entre os workers (arredonda para cima)
+    if n_jobs > (os.cpu_count() or 1):
+        print(f'Aviso: {n_jobs} processos para {os.cpu_count()} núcleos lógicos: os processos vão disputar a CPU.')
+    ctrl = tempfile.mkdtemp(prefix=f'{ScriptName}_Par_')              # arquivos <faixa>_w<k>.done (fim de cada janela)
     env = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')   # 1 thread por janela
+    si = None
+    if n_jobs > 4:                                                     # muitas janelas: abertas minimizadas (barra de tarefas)
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7                                             # SW_SHOWMINNOACTIVE
     jobs = []
-    print(f'\nEtapa model em paralelo: {len(faixas)} janelas | ' + ' | '.join(f'nL {a}-{b}' for a, b in faixas))
+    print(f'\nEtapa model em paralelo: {n_jobs} janelas = {len(faixas)} faixa(s) x {nW} worker(s) | '
+          + ' | '.join(f'nL {a}-{b}' for a, b in faixas)
+          + (f' | {n_tr} trials por worker, por sessão e por nº de camadas' if nW > 1 else ''))
     for nl in faixas:
-        done = os.path.join(ctrl, f'L{nl[0]}-{nl[1]}.done')
-        p = subprocess.Popen(WorkerArgv(nl, done), cwd=os.getcwd(), env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
-        jobs.append((nl, p, done))
-        print(f'  janela aberta: camadas {nl[0]} a {nl[1]}')
-        time.sleep(5)                       # janelas abertas em sequência: evita criar o optuna.db ao mesmo tempo
+        for k in range(nW):
+            done = os.path.join(ctrl, f'L{nl[0]}-{nl[1]}_w{k + 1}.done')
+            p = subprocess.Popen(WorkerArgv(nl, done, k, n_tr), cwd=os.getcwd(), env=env,
+                                 creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=si)
+            jobs.append((nl, k, p, done))
+            print(f'  janela aberta: camadas {nl[0]} a {nl[1]}' + (f', worker {k + 1}/{nW}' if nW > 1 else ''))
+            time.sleep(5 if len(jobs) == 1 else 1)   # a 1ª janela cria o optuna.db; as demais o encontram pronto
     print('Aguardando as janelas (verificação a cada 10 s; Ctrl+C encerra apenas esta espera, as janelas continuam)...')
     status = {}
     while len(status) < len(jobs):
         time.sleep(10)
-        for nl, p, done in jobs:
-            key = f'{nl[0]}-{nl[1]}'
+        for nl, k, p, done in jobs:
+            key = f'{nl[0]}-{nl[1]}' + (f' worker {k + 1}' if nW > 1 else '')
             if key in status: continue
             if os.path.exists(done):        # gravado pela janela antes da pausa final
                 with open(done) as f: rc = f.read().strip()
@@ -203,8 +234,10 @@ def StageModelPar(data):
 
 
 def Worker(data):
-    '''Janela de uma faixa: etapa model; grava o arquivo de término e espera Enter para fechar.'''
-    title = f'{ScriptName} {args.instancia} - camadas {args.nLS[0]} a {args.nLS[1]}'
+    '''Janela de uma faixa: etapa model; grava o arquivo de término. Fecha sozinha ao concluir; em caso de erro,
+    espera Enter (para ler a mensagem).'''
+    title = f'{ScriptName} {args.instancia} - camadas {args.nLS[0]} a {args.nLS[1]}' + \
+            (f' - worker {args.worker + 1}/{args.n_workers}' if args.n_workers > 1 else '')
     try:
         import ctypes
         ctypes.windll.kernel32.SetConsoleTitleW(title)
@@ -218,8 +251,9 @@ def Worker(data):
         rc = 1
     with open(args.done, 'w') as f: f.write(str(rc))
     print(f'\nFim desta faixa (código {rc}). O Optimization.csv é gerado pela janela de controle.')
-    try: input('Pressione Enter para fechar esta janela...')
-    except (EOFError, KeyboardInterrupt): pass
+    if rc != 0:
+        try: input('Pressione Enter para fechar esta janela...')
+        except (EOFError, KeyboardInterrupt): pass
     sys.exit(rc)
 
 
@@ -257,7 +291,7 @@ if __name__ == '__main__':
           f'n_study={args.n_study} | n_trials={args.n_trials} | patience={args.patience} | timeout={args.timeout} | '
           f'mS={args.mS} | nLS={args.nLS} | nIS={args.nIS} | nRS={args.nRS} | nOS={args.nOS} | mOS={args.mOS} | '
           f'wS={args.wS if args.wS is not None else f"fixo (w = {W})"} | '
-          f'par={args.par}')
+          f'par={args.par} | workers={args.workers}')
     if args.done: Worker(data)              # janela aberta por StageModelPar
     if args.stage in ('all', 'model'): StageModelPar(data) if args.par else StageModel(data)
     if args.stage == 'table': StageTable(data)
