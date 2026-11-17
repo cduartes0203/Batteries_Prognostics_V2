@@ -44,7 +44,7 @@ def plot_RUL_CI(teda, startX=None, startY=None, endX=None, endY=None,
 
 
     for i,cloud in enumerate(teda.c):
-        gx, gy = np.array(cloud.t)+teda.st-1, cloud.rul
+        gx, gy = np.array(cloud.t)+getattr(teda, 'st', 0)-1, cloud.rul
         ax.plot(gx, gy, marker='o', color=colors[i], markersize=mk1,
             linestyle='', label=f'G{cloud.ID}')
     ax.plot(eolX, eolY, marker='x', color='black', markersize=mk2, linestyle='', markeredgewidth=mk2/3, label='EoL')

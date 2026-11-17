@@ -204,6 +204,33 @@ class eRNN:
         self.qS = [np.zeros_like(q) for q in self.qS]
         self.x = np.zeros_like(self.x)
 
+    def SettleState(self, xP, n_max=3000, tol=1e-9):
+        '''
+        Estado recorrente de equilíbrio para a entrada fixa xP (início de uma nova série temporal, novo rolamento):
+            h* = (1 - 1/τ) h* + φ(wR h* + wI [h^{l-1}*; 1]) / τ   em todas as camadas,
+        obtido iterando o passo direto (sem aprendizado) a partir do estado inicial (0.1), até max|Δh| < tol ou n_max
+        iterações. Independe do estado deixado pela série anterior e usa apenas a primeira janela da nova série (causal).
+        Traços de elegibilidade (pS, qS) zerados; pesos mantidos. Retorna (nº de iterações, max|Δh| final).
+        '''
+        self.ResetState()
+        xP = np.append(xP, 1)
+        dmax = np.inf
+        for it in range(1, n_max + 1):
+            curr_in, new_uP, new_hP = xP, [], []
+            for l in range(self.nL):
+                u = self.wR[l] @ self.hP[l] + self.wI[l] @ curr_in
+                h = self.hP[l] * (1 - 1 / self.τ) + Activation(u, self.act) / self.τ
+                new_uP.append(u)
+                new_hP.append(h)
+                curr_in = np.append(h, 1)
+            dmax = max(float(np.max(np.abs(h1 - h0))) for h1, h0 in zip(new_hP, self.hP))
+            self.hP, self.uP = new_hP, new_uP
+            if not np.isfinite(dmax): raise FloatingPointError('SettleState: estado divergiu.')
+            if dmax < tol: break
+        self.x = xP
+        self.Restore()
+        return it, dmax
+
     def Advance(self, x):
         # Um passo livre a partir do estado de predição hP2 (avança hP2)
         curr_in = np.append(x, 1)

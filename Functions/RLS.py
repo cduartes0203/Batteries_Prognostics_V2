@@ -80,7 +80,7 @@ class RLS_ExponentialRegressor:
         return beta_0, beta_1
     
 class RLS_LogarithmicRegressor:
-    def __init__(self, ff=0.9, dt=10000):
+    def __init__(self, nf=1, ff=0.9, dt=10000, xs=1.0):
         """
         Regressão logarítmica recursiva via RLS.
         y = beta_0 + beta_1 * ln(x)
@@ -88,6 +88,8 @@ class RLS_LogarithmicRegressor:
         :param ff: Fator de esquecimento
         :param delta: Valor inicial para P (confiança inicial baixa)
         """
+        self.xs = xs
+        self.nf = nf
         self.dt = dt
         self.theta = np.zeros((3, 1))              # [beta_0, beta_1]
         self.P = self.dt * np.eye(3)
