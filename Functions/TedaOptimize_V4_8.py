@@ -505,10 +505,16 @@ def OptimizeSeq(
                 if not np.isfinite(teda.hiP[-1]): raise TrialPruned()
                 if OptPrune and j >= 40 and j%5 == 0:
                     if teda.wape_RUL > 0.6 or teda.wape_HI > 0.3: raise TrialPruned()
+            if teda.wape_RUL > 0.3 or teda.wape_HI > 0.2: raise TrialPruned()
             wR, wH = float(teda.wape_RUL), float(teda.wape_HI)
             trial.set_user_attr(f'WAPE_RUL_{nm}', wR)
             trial.set_user_attr(f'WAPE_HI_{nm}', wH)
-            errs.append(wR + wH)
+            
+            wR = (wR - 0)/(0.3 - 0)
+            wH = (wH - 0)/(0.2 - 0) 
+            errs.append(wR * wH)
+            #errs.append(wR + wH)
+
             if OptPrune:
                 trial.report(Agg(errs), b)           # objetivo parcial ao fim de cada rolamento
                 if trial.should_prune(): raise TrialPruned()

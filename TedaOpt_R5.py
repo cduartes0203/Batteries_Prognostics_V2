@@ -7,7 +7,18 @@ Mudanças em relação ao R4:
     - usa TedaOptimize_V4_8: a janela do DSI em X_k (w, PrepareData) pode ser otimizada com --wS MIN MAX
       (inteiros >= 1), como as demais faixas. Sem --wS, w = 1 fixo (como no R4). O mesmo w vale para todos os
       rolamentos do trial; o Optimization.csv ganha a coluna w e a etapa plot usa o w da melhor linha;
-    - gráficos em IMAGES\\TedaRNN_Opt_R5\\ (pasta com o nome deste script);
+    - arquivo renomeado de TedaRNN_Opt_R5 para TedaOpt_R5: pastas de resultados Optimization\\TedaOpt_R5_<...>\\ e
+      gráficos em IMAGES\\TedaOpt_R5\\ (pasta com o nome deste script). Para retomar uma instância criada com o nome
+      antigo, renomeie a pasta Optimization\\TedaRNN_Opt_R5_<...> para Optimization\\TedaOpt_R5_<...>;
+    - todos os argumentos de OptimizeSeq podem ser definidos pelo usuário (antes fixos no script ou nos padrões da função),
+      em três grupos (--help): execução (--instancia, --stage, --agg, --bearings), Optuna (--sampler, --seed, --prune,
+      --n_study, --n_trials, --patience, --timeout, --reset, --warm, --n_best, --par, --workers) e modelo TEDA-RNN
+      (--state, --feedback, --wtaG, --wtaP, --eol, --mS, --nLS, --nRS, --nIS, --nOS, --mOS, --N1S, --N2S, --N3S,
+      --tauS, --actS, --w, --wS, --rho, --intr_state). Os padrões reproduzem a configuração anterior.
+      --actS é uma faixa [MIN, MAX] de ativações (0 = tanh, 1 = relu, 2 = sigmoid); o padrão 0 1 equivale ao
+      padrão actS = [0, 1, 2] de OptimizeSeq, que usa apenas actS[0] e actS[1] (a sigmoid nunca era testada).
+      --reset 1 APAGA os estudos da faixa --nLS (todas as sessões --n_study) antes de otimizar; em paralelo, o
+      controle apaga uma única vez, antes de abrir as janelas;
     - --workers N: N processos (janelas) por par de nº de camadas, todos nos MESMOS estudos do optuna.db
       (OptimizeSeq com worker/n_workers): o Optuna distribui os trials entre eles. Ex.: --nLS 1 6 --workers 4 ->
       12 janelas (4 para nL 1-2, 4 para 3-4 e 4 para 5-6). --n_trials continua sendo o total por sessão e por nº de
@@ -40,19 +51,19 @@ Etapas (--stage):
             --nLS, n_study sessões de n_trials trials. Objetivo = média (--agg mean) ou soma (--agg sum), sobre os
             rolamentos, de WAPE_RUL + WAPE_HI final de cada rolamento (predições pontuais).
     plot  : simulação final com o melhor modelo (SimSeq, RUL intervalar com --rho e --intr_state) e gráficos de
-            PlotSimulation de cada rolamento em IMAGES\\TedaRNN_Opt_R5\\ (.png).
+            PlotSimulation de cada rolamento em IMAGES\\TedaOpt_R5\\ (.png).
     table : apenas reconstrói o mono\\Optimization.csv a partir do optuna.db (SeqTable), sem executar trials; usado ao fim
             das execuções em paralelo (uma janela por faixa de nº de camadas, mesmo banco, com --table 0).
     all   : model e plot, em ordem (padrão).
 Estado recorrente das RNNs no início de cada rolamento seguinte (--state): keep (padrão), reset ou fixed (AutoCloud.restart).
 
 Uso (na pasta principal):
-    .venv\\Scripts\\python.exe -X utf8 TedaRNN_Opt_R5.py --bearings 1_1 1_2 --instancia teste1 --sampler tpe
+    .venv\\Scripts\\python.exe -X utf8 TedaOpt_R5.py --bearings 1_1 1_2 --instancia teste1 --sampler tpe
                                                --n_trials 1000 --nLS 1 3 --mS 1.75 2.05 --wS 1 5
-    (ou TedaRNN_Opt_R5.bat: sem argumentos pergunta cada valor; --help lista os argumentos)
+    (ou TedaOpt_R5.bat: sem argumentos pergunta cada valor; --help lista os argumentos)
 Dados: Dataset\\DSIR1n\\B<b>.csv (DSI) e Dataset\\HI1\\Bearing<b>.csv (HI, coluna PC1), b = 1_1, 1_2, ...
-Resultados: Optimization\\TedaRNN_Opt_R5_<instancia>_<B1_1-B1_2>_restart[-<state>]_<feedback>_G<wtaG>P<wtaP>\\
-            (optuna.db, mono\\Optimization.csv) e IMAGES\\TedaRNN_Opt_R5\\<mesmo nome>_<i>_<rolamento>.png
+Resultados: Optimization\\TedaOpt_R5_<instancia>_<B1_1-B1_2>_restart[-<state>]_<feedback>_G<wtaG>P<wtaP>\\
+            (optuna.db, mono\\Optimization.csv) e IMAGES\\TedaOpt_R5\\<mesmo nome>_<i>_<rolamento>.png
 '''
 import os
 import sys
@@ -71,41 +82,66 @@ from Functions.TedaGraphs import PlotSimulation
 
 
 SAMPLERS = ['random', 'tpe', 'gp', 'nsgaii', 'auto', 'none']
+R2 = dict(nargs=2, metavar=('MIN', 'MAX'))
 
 parser = argparse.ArgumentParser(description='Otimização do AutoCloud_V4_6 em uma sequência de rolamentos (restart).')
-parser.add_argument("--bearings", nargs='+', default=['1_1', '1_2'], metavar='B',
-                    help="rolamentos em ordem, ex.: 1_1 1_2 (padrão: 1_1 1_2)")
-parser.add_argument("--state", default="keep", choices=['keep', 'reset', 'fixed'],
-                    help="estado das RNNs no início de cada rolamento seguinte (padrão: keep)")
-parser.add_argument("--agg", default="mean", choices=['mean', 'sum'],
-                    help="objetivo: média ou soma de WAPE_RUL + WAPE_HI dos rolamentos (padrão: mean)")
-parser.add_argument("--stage", default="all", choices=['all', 'model', 'table', 'plot'], help="etapa(s) executada(s) (padrão: all)")
-parser.add_argument("--table", default=1, type=int, choices=[0, 1],
-                    help="etapa model: 1 = grava o Optimization.csv ao fim; 0 = não grava (execuções em paralelo) (padrão: 1)")
-parser.add_argument("--instancia", default="principal", help="sufixo do nome da pasta de resultados (padrão: principal)")
-parser.add_argument("--sampler", default="random", type=str.lower, choices=SAMPLERS, help="OptSampler (padrão: random)")
-parser.add_argument("--seed", default=1, type=int, help="OptSeed: semente base das sessões (padrão: 1)")
-parser.add_argument("--prune", default=1, type=int, choices=[0, 1], help="OptPrune: 1 = poda trials ruins (padrão: 1)")
-parser.add_argument("--n_study", default=1, type=int, help="sessões por nº de camadas (padrão: 1)")
-parser.add_argument("--n_trials", default=1000, type=int, help="trials novos por sessão e por nº de camadas (padrão: 1000)")
-parser.add_argument("--patience", default=500, type=int, help="parada antecipada: trials sem melhora (padrão: 500)")
-parser.add_argument("--timeout", default=3600, type=int, help="tempo máximo por sessão, em s (padrão: 3600)")
-parser.add_argument("--mS", nargs=2, type=float, default=[1.75, 2.05], metavar=('MIN', 'MAX'), help="faixa de m (padrão: 1.75 2.05)")
-parser.add_argument("--nLS", nargs=2, type=int, default=[1, 3], metavar=('MIN', 'MAX'), help="faixa do nº de camadas (padrão: 1 3)")
-parser.add_argument("--nIS", nargs=2, type=int, default=[2, 40], metavar=('MIN', 'MAX'), help="faixa de nI (padrão: 2 40)")
-parser.add_argument("--nRS", nargs=2, type=int, default=[1, 60], metavar=('MIN', 'MAX'), help="faixa de neurônios por camada (padrão: 1 60)")
-parser.add_argument("--nOS", nargs=2, type=int, default=[1, 40], metavar=('MIN', 'MAX'), help="faixa de nO (padrão: 1 40)")
-parser.add_argument("--mOS", nargs=2, type=int, default=[0, 40], metavar=('MIN', 'MAX'), help="faixa de mO (padrão: 0 40)")
-parser.add_argument("--wS", nargs=2, type=int, default=None, metavar=('MIN', 'MAX'),
-                    help="faixa da janela w do DSI em X_k (padrão: não otimizada, w = 1)")
-parser.add_argument("--rho", default=0.1, type=float, help="rho estático da simulação final, etapa plot (padrão: 0.1)")
-parser.add_argument("--intr_state", default="carry", choices=['carry', 'reset'],
-                    help="estado intervalar da RUL intervalar, etapa plot (padrão: carry)")
-parser.add_argument("--par", default=1, type=int, choices=[0, 1],
-                    help="etapa model: 1 = uma janela por par de nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
-parser.add_argument("--workers", default=1, type=int,
-                    help="etapa model em paralelo: processos (janelas) por par de nº de camadas, todos nos mesmos estudos; "
-                         "--n_trials é dividido entre eles (padrão: 1)")
+# --- Execução
+g = parser.add_argument_group('execução')
+g.add_argument("--instancia", default="principal", help="sufixo do nome da pasta de resultados (padrão: principal)")
+g.add_argument("--stage", default="all", choices=['all', 'model', 'table', 'plot'], help="etapa(s) executada(s) (padrão: all)")
+g.add_argument("--agg", default="mean", choices=['mean', 'sum'],
+               help="objetivo: média ou soma de WAPE_RUL + WAPE_HI dos rolamentos (padrão: mean)")
+g.add_argument("--bearings", nargs='+', default=['1_1', '1_2'], metavar='B',
+               help="rolamentos em ordem, ex.: 1_1 1_2 (padrão: 1_1 1_2)")
+g.add_argument("--table", default=1, type=int, choices=[0, 1],
+               help="etapa model: 1 = grava o Optimization.csv ao fim; 0 = não grava (execuções em paralelo) (padrão: 1)")
+# --- Optuna (OptimizeSeq)
+g = parser.add_argument_group('Optuna (OptimizeSeq)')
+g.add_argument("--sampler", default="random", type=str.lower, choices=SAMPLERS, help="OptSampler (padrão: random)")
+g.add_argument("--seed", default=1, type=int, help="OptSeed: semente base das sessões (padrão: 1)")
+g.add_argument("--prune", default=1, type=int, choices=[0, 1], help="OptPrune: 1 = poda trials ruins (padrão: 1)")
+g.add_argument("--n_study", default=1, type=int, help="sessões por nº de camadas (padrão: 1)")
+g.add_argument("--n_trials", default=1000, type=int, help="trials novos por sessão e por nº de camadas (padrão: 1000)")
+g.add_argument("--patience", default=500, type=int, help="parada antecipada: trials sem melhora (padrão: 500)")
+g.add_argument("--timeout", default=3600, type=int, help="tempo máximo por sessão, em s (padrão: 3600)")
+g.add_argument("--reset", default=0, type=int, choices=[0, 1],
+               help="OptReset: 1 = APAGA os estudos desta instância (faixa --nLS e --n_study) antes de otimizar (padrão: 0)")
+g.add_argument("--warm", default=0, type=int, choices=[0, 1],
+               help="OptWarm: 1 = começa pelo melhor trial das outras sessões do mesmo nº de camadas (padrão: 0)")
+g.add_argument("--n_best", default=10, type=int, help="linhas por nº de camadas no Optimization.csv (padrão: 10)")
+g.add_argument("--par", default=1, type=int, choices=[0, 1],
+               help="etapa model: 1 = uma janela por par de nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
+g.add_argument("--workers", default=1, type=int,
+               help="etapa model em paralelo: processos (janelas) por par de nº de camadas, todos nos mesmos estudos; "
+                    "--n_trials é dividido entre eles (padrão: 1)")
+# --- Modelo (AutoCloud / eRNN): configuração e faixas de busca
+g = parser.add_argument_group('modelo TEDA-RNN (configuração e faixas de busca)')
+g.add_argument("--state", default="keep", choices=['keep', 'reset', 'fixed'],
+               help="estado das RNNs no início de cada rolamento seguinte (padrão: keep)")
+g.add_argument("--feedback", default="symmetric", choices=['symmetric', 'random'],
+               help="sinal de erro das RNNs: symmetric (gradiente) ou random (ablação: RFLO + DFA) (padrão: symmetric)")
+g.add_argument("--wtaG", default=0, type=int, choices=[0, 1],
+               help="1 = winner-takes-all na saída dos grânulos (0: soma ponderada, eq. 36) (padrão: 0)")
+g.add_argument("--wtaP", default=0, type=int, choices=[0, 1],
+               help="1 = winner-takes-all na predição da RUL (padrão: 0)")
+g.add_argument("--eol", default=0.3, type=float, help="limiar de fim de vida (EoL) do HI (padrão: 0.3)")
+g.add_argument("--mS", type=float, default=[1.75, 2.05], **R2, help="faixa de m, limiar do TEDA (padrão: 1.75 2.05)")
+g.add_argument("--nLS", type=int, default=[1, 3], **R2, help="faixa do nº de camadas (padrão: 1 3)")
+g.add_argument("--nRS", type=int, default=[1, 60], **R2, help="faixa de neurônios por camada (padrão: 1 60)")
+g.add_argument("--nIS", type=int, default=[2, 40], **R2, help="faixa de nI, valores passados do HI na entrada (padrão: 2 40)")
+g.add_argument("--nOS", type=int, default=[1, 40], **R2, help="faixa de nO, valores futuros de Z_k (padrão: 1 40)")
+g.add_argument("--mOS", type=int, default=[0, 40], **R2, help="faixa de mO, valores passados de Z_k (padrão: 0 40)")
+g.add_argument("--N1S", type=int, default=[1, 9], **R2, help="faixa de N1, expoente da taxa de aprendizado 1 (padrão: 1 9)")
+g.add_argument("--N2S", type=int, default=[1, 9], **R2, help="faixa de N2, expoente da taxa de aprendizado 2 (padrão: 1 9)")
+g.add_argument("--N3S", type=int, default=[1, 9], **R2, help="faixa de N3, expoente da taxa de aprendizado 3 (padrão: 1 9)")
+g.add_argument("--tauS", type=int, default=[1, 40], **R2, help="faixa de τ, constante de tempo das RNNs (padrão: 1 40)")
+g.add_argument("--actS", type=int, default=[0, 1], **R2,
+               help="faixa da ativação: 0 = tanh, 1 = relu, 2 = sigmoid (padrão: 0 1)")
+g.add_argument("--w", default=1, type=int, help="janela w do DSI em X_k quando --wS não é informado (padrão: 1)")
+g.add_argument("--wS", type=int, default=None, **R2, help="faixa da janela w do DSI em X_k (padrão: w fixo = --w)")
+g.add_argument("--rho", default=0.1, type=float, help="rho estático da simulação final, etapa plot (padrão: 0.1)")
+g.add_argument("--intr_state", default="carry", choices=['carry', 'reset'],
+               help="estado intervalar da RUL intervalar, etapa plot (padrão: carry)")
 parser.add_argument("--done", default=None, help=argparse.SUPPRESS)   # uso interno: janela de uma faixa (arquivo de término)
 parser.add_argument("--worker", default=0, type=int, help=argparse.SUPPRESS)      # uso interno: nº do worker (0, 1, ...)
 parser.add_argument("--n_workers", default=1, type=int, help=argparse.SUPPRESS)   # uso interno: workers por estudo
@@ -120,21 +156,30 @@ check('nIS', args.nIS, 1)
 check('nRS', args.nRS, 1)
 check('nOS', args.nOS, 1)
 check('mOS', args.mOS, 0)
+check('N1S', args.N1S, 0)
+check('N2S', args.N2S, 0)
+check('N3S', args.N3S, 0)
+check('tauS', args.tauS, 1)
+check('actS', args.actS, 0)
+if args.actS[1] > 2: parser.error('actS: ativações disponíveis 0 (tanh), 1 (relu) e 2 (sigmoid)')
 if args.wS is not None: check('wS', args.wS, 1)
+if args.w < 1: parser.error('w deve ser >= 1')
+if not 0 < args.eol < 1: parser.error('eol deve estar entre 0 e 1')
 if args.n_trials < 1 or args.n_study < 1: parser.error('n_trials e n_study devem ser >= 1')
+if args.n_best < 1: parser.error('n_best deve ser >= 1')
 if args.workers < 1: parser.error('workers deve ser >= 1')
 if args.rho < 0: parser.error('rho deve ser >= 0')
 if len(args.bearings) < 2: parser.error('--bearings: informe pelo menos dois rolamentos')
 if len(set(args.bearings)) != len(args.bearings): parser.error('--bearings: rolamentos repetidos')
 
-ScriptName = os.path.splitext(os.path.basename(__file__))[0]   # 'TedaRNN_Opt_R5'
+ScriptName = os.path.splitext(os.path.basename(__file__))[0]   # 'TedaOpt_R5'
 FileName = ScriptName + "_" + args.instancia
 
-# Configuração do experimento
-FEEDBACK = 'symmetric'      # 'symmetric' (gradiente no passo atual) ou 'random' (ablação: RFLO + DFA)
-WTAG, WTAP = False, False   # configuração principal: soma ponderada dos grânulos (eq. 36)
-EOL = 0.3                   # limiar de fim de vida (EoL) do HI
-W = 1                       # janela do DSI em cada X_k sem --wS (nº de amostras do RS; PrepareData/WindowDSI)
+# Configuração do experimento (argumentos do grupo 'modelo')
+FEEDBACK = args.feedback    # 'symmetric' (gradiente no passo atual) ou 'random' (ablação: RFLO + DFA)
+WTAG, WTAP = bool(args.wtaG), bool(args.wtaP)   # configuração principal: 0 0, soma ponderada dos grânulos (eq. 36)
+EOL = args.eol              # limiar de fim de vida (EoL) do HI
+W = args.w                  # janela do DSI em cada X_k sem --wS (nº de amostras do RS; PrepareData/WindowDSI)
 FOLDER = 'Optimization'
 IMAGES = os.path.join('IMAGES', ScriptName)   # gráficos em IMAGES\<nome deste script>\ (apenas .png)
 
@@ -155,13 +200,31 @@ def Tag(data):
     return f'{FileName}_{"-".join(d[0] for d in data)}_{tag_rs}_{FEEDBACK}_G{int(WTAG)}P{int(WTAP)}'
 
 
-def StageModel(data):
+def StageModel(data, reset=None):
+    # reset: OptReset; None = --reset. Nas janelas em paralelo é sempre False (o controle apaga os estudos antes, ResetStudies)
     OptimizeSeq(data=data, FileName=FileName, OptSampler=args.sampler, OptSeed=args.seed, OptPrune=bool(args.prune),
                 n_study=args.n_study, n_trials=args.n_trials, patience=args.patience, timeout=args.timeout,
                 mS=args.mS, nLS=args.nLS, nIS=args.nIS, nRS=args.nRS, nOS=args.nOS, mOS=args.mOS,
+                N1S=args.N1S, N2S=args.N2S, N3S=args.N3S, τS=args.tauS, actS=args.actS,
                 feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, eol=EOL, w=W, wS=args.wS, agg=args.agg, state=args.state,
-                OptReset=False, folder=FOLDER, write_table=bool(args.table),
-                worker=args.worker, n_workers=args.n_workers)
+                OptReset=bool(args.reset) if reset is None else reset, OptWarm=bool(args.warm), n_best=args.n_best,
+                folder=FOLDER, write_table=bool(args.table), worker=args.worker, n_workers=args.n_workers)
+
+
+def ResetStudies(data):
+    '''--reset 1 em paralelo: apaga UMA vez, antes de abrir as janelas, os estudos da faixa --nLS e das --n_study sessões
+    (se cada janela apagasse, um worker apagaria os trials que outro acabou de gravar).'''
+    import optuna
+    db = os.path.abspath(os.path.join(FOLDER, Tag(data), 'optuna.db'))
+    if not os.path.exists(db): return
+    storage = optuna.storages.RDBStorage('sqlite:///' + db.replace(os.sep, '/'))
+    names = set(optuna.get_all_study_names(storage))
+    for nL in range(args.nLS[0], args.nLS[1] + 1):
+        for i in range(args.n_study):
+            name = f'seq{args.agg}_L{nL}-{nL}_s{i + 1}'
+            if name in names:
+                optuna.delete_study(study_name=name, storage=storage)
+                print(f'  {name}: estudo anterior apagado (--reset 1).')
 
 
 def Faixas(lo, hi):
@@ -175,11 +238,14 @@ def WorkerArgv(nl, done, k, n_trials):
     a = args
     s = lambda v: [str(x) for x in v]
     return [sys.executable, '-X', 'utf8', os.path.abspath(__file__),
-            '--bearings', *a.bearings, '--state', a.state, '--agg', a.agg, '--stage', 'model', '--table', '0', '--par', '0',
-            '--instancia', a.instancia, '--sampler', a.sampler, '--seed', str(a.seed), '--prune', str(a.prune),
-            '--n_study', str(a.n_study), '--n_trials', str(n_trials), '--patience', str(a.patience),
-            '--timeout', str(a.timeout), '--mS', *s(a.mS), '--nLS', *s(nl), '--nIS', *s(a.nIS), '--nRS', *s(a.nRS),
-            '--nOS', *s(a.nOS), '--mOS', *s(a.mOS), *(['--wS', *s(a.wS)] if a.wS is not None else []),
+            '--instancia', a.instancia, '--stage', 'model', '--agg', a.agg, '--bearings', *a.bearings, '--table', '0',
+            '--sampler', a.sampler, '--seed', str(a.seed), '--prune', str(a.prune), '--n_study', str(a.n_study),
+            '--n_trials', str(n_trials), '--patience', str(a.patience), '--timeout', str(a.timeout),
+            '--reset', '0', '--warm', str(a.warm), '--n_best', str(a.n_best), '--par', '0',
+            '--state', a.state, '--feedback', a.feedback, '--wtaG', str(a.wtaG), '--wtaP', str(a.wtaP), '--eol', str(a.eol),
+            '--mS', *s(a.mS), '--nLS', *s(nl), '--nRS', *s(a.nRS), '--nIS', *s(a.nIS), '--nOS', *s(a.nOS),
+            '--mOS', *s(a.mOS), '--N1S', *s(a.N1S), '--N2S', *s(a.N2S), '--N3S', *s(a.N3S), '--tauS', *s(a.tauS),
+            '--actS', *s(a.actS), '--w', str(a.w), *(['--wS', *s(a.wS)] if a.wS is not None else []),
             '--worker', str(k), '--n_workers', str(a.workers), '--done', done]
 
 
@@ -195,6 +261,7 @@ def StageModelPar(data):
     n_tr = -(-args.n_trials // nW)                                     # n_trials dividido entre os workers (arredonda para cima)
     if n_jobs > (os.cpu_count() or 1):
         print(f'Aviso: {n_jobs} processos para {os.cpu_count()} núcleos lógicos: os processos vão disputar a CPU.')
+    if args.reset: ResetStudies(data)                                  # uma única vez, antes das janelas
     ctrl = tempfile.mkdtemp(prefix=f'{ScriptName}_Par_')              # arquivos <faixa>_w<k>.done (fim de cada janela)
     env = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')   # 1 thread por janela
     si = None
@@ -260,7 +327,7 @@ def Worker(data):
 def StageTable(data):
     db = os.path.abspath(os.path.join(FOLDER, Tag(data), 'optuna.db'))
     if not os.path.exists(db): raise FileNotFoundError(f'{db} não encontrado: a etapa model ainda não foi executada.')
-    SeqTable(db, [d[0] for d in data], agg=args.agg, w=W)
+    SeqTable(db, [d[0] for d in data], agg=args.agg, n_best=args.n_best, w=W)
 
 
 def StagePlot(data):
@@ -286,12 +353,14 @@ def StagePlot(data):
 
 if __name__ == '__main__':
     data = LoadData(args.bearings)
-    print(f'{FileName}: rolamentos={" -> ".join(d[0] for d in data)} | state={args.state} | agg={args.agg} | '
-          f'stage={args.stage} | sampler={args.sampler} | seed={args.seed} | prune={bool(args.prune)} | '
-          f'n_study={args.n_study} | n_trials={args.n_trials} | patience={args.patience} | timeout={args.timeout} | '
-          f'mS={args.mS} | nLS={args.nLS} | nIS={args.nIS} | nRS={args.nRS} | nOS={args.nOS} | mOS={args.mOS} | '
-          f'wS={args.wS if args.wS is not None else f"fixo (w = {W})"} | '
-          f'par={args.par} | workers={args.workers}')
+    print(f'{FileName}: stage={args.stage} | agg={args.agg} | rolamentos={" -> ".join(d[0] for d in data)}\n'
+          f'  Optuna: sampler={args.sampler} | seed={args.seed} | prune={bool(args.prune)} | n_study={args.n_study} | '
+          f'n_trials={args.n_trials} | patience={args.patience} | timeout={args.timeout} | reset={bool(args.reset)} | '
+          f'warm={bool(args.warm)} | n_best={args.n_best} | par={args.par} | workers={args.workers}\n'
+          f'  Modelo: state={args.state} | feedback={FEEDBACK} | wtaG={WTAG} | wtaP={WTAP} | eol={EOL} | '
+          f'mS={args.mS} | nLS={args.nLS} | nRS={args.nRS} | nIS={args.nIS} | nOS={args.nOS} | mOS={args.mOS} | '
+          f'N1S={args.N1S} | N2S={args.N2S} | N3S={args.N3S} | tauS={args.tauS} | actS={args.actS} | '
+          f'wS={args.wS if args.wS is not None else f"fixo (w = {W})"} | rho={args.rho} | intr_state={args.intr_state}')
     if args.done: Worker(data)              # janela aberta por StageModelPar
     if args.stage in ('all', 'model'): StageModelPar(data) if args.par else StageModel(data)
     if args.stage == 'table': StageTable(data)
