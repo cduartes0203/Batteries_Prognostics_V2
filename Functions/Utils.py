@@ -777,13 +777,13 @@ def ParseParams(params):
     '''
     import ast
     p = list(params)
-    if len(p) == 11:
-        m, nI, nR, nO, mO, N1, N2, N3, tau, mode, act = p
+    if len(p) == 12:
+        m, nI, nR, nO, mO, N1, N2, N3, tau, mode, act, w = p
         if mode in ('past', 0): nO, mO = 1, int(nO) - 1
-    elif len(p) == 10:
-        m, nI, nR, nO, mO, N1, N2, N3, tau, act = p
+    elif len(p) == 11:
+        m, nI, nR, nO, mO, N1, N2, N3, tau, act, w = p
     else:
-        raise ValueError('params deve ter 10 itens [m,nI,nR,nO,mO,N1,N2,N3,τ,act] (ou 11 no formato antigo, com mode).')
+        raise ValueError('params deve ter 10 itens [m,nI,nR,nO,mO,N1,N2,N3,τ,act,w] (ou 11 no formato antigo, com mode).')
     if isinstance(nR, str): nR = ast.literal_eval(nR)
     nR = [int(n) for n in np.atleast_1d(nR)]
-    return [float(m), int(nI), nR, int(nO), int(mO), N1, N2, N3, tau, int(act)]
+    return [float(m), int(nI), nR, int(nO), int(mO), N1, N2, N3, tau, int(act), w]
