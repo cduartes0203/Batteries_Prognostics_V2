@@ -3,7 +3,9 @@ Otimização (Optuna) do AutoCloud_V4_6 com rho estático.
 
     Optimize    : um rolamento; minimiza WAPE_RUL + WAPE_HI (predições pontuais).
     OptimizeSeq : sequência de rolamentos assimilada pelo mesmo modelo (AutoCloud.restart entre rolamentos);
-                  minimiza a média (ou soma) de WAPE_RUL + WAPE_HI final de cada rolamento.
+                  mode='single': minimiza a média (ou soma) de WAPE_RUL*WAPE_HI final de cada rolamento;
+                  mode='multi' : minimiza separadamente F_RUL = média (ou soma) de WAPE_RUL e F_HI = média (ou soma)
+                                 de WAPE_HI (otimização multiobjetivo, frente de Pareto). WAPE sem normalização.
     BestParams  : melhor linha de um Optimization.csv no formato de ParseParams.
     BestParamsW : idem, com a janela w da mesma linha: (params, w).
     SimSeq      : simulação final de uma sequência de rolamentos com parâmetros fixos (mesmo procedimento de OptimizeSeq).
@@ -17,7 +19,10 @@ Mudanças em relação à V4_7:
       como parâmetro do trial ('w', fixo quando wS = None, como n_layers), de modo que as combinações repetidas
       (_Key) e as tabelas consideram w;
     - Optimization.csv ganha a coluna 'w' logo após 'activation' (as 10 primeiras colunas de parâmetros não mudam:
-      BestParams continua compatível); BestParamsW devolve também o w da melhor linha.
+      BestParams continua compatível); BestParamsW devolve também o w da melhor linha;
+    - OptimizeSeq(worker, n_workers): vários processos no MESMO estudo (mesmo optuna.db), com semente por worker,
+      TPE com constant_liar, combinações repetidas verificadas também nos trials dos outros workers e patience
+      zerada por melhora de qualquer worker. Com worker = 0 e n_workers = 1 (padrão), igual à versão anterior.
 
 Mudanças da V4_7 em relação à V4_6:
     - a semente do sampler de cada sessão (_Seed) depende também do nº de trials já armazenados no estudo (n_prev).
@@ -34,9 +39,9 @@ import optuna
 from optuna.exceptions import TrialPruned
 from Functions.AutoCloud_V4_6 import AutoCloud, RefEoL
 from Functions.Utils import PrepareData, ParseParams
-from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler
+from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler, ProcessStart
 
-__all__ = ['Optimize', 'OptimizeSeq', 'SeqTable', 'BestParams', 'BestParamsW', 'SimSeq']
+__all__ = ['Optimize', 'OptimizeSeq', 'SeqTable', 'ParetoTable', 'BestParams', 'BestParamsW', 'SimSeq']
 
 
 def _WRange(w, wS):
@@ -64,14 +69,16 @@ def _Complete(study):
     return [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
 
 
-def _Seed(OptSeed, nL, i, study_name, storage):
+def _Seed(OptSeed, nL, i, study_name, storage, worker=0):
     '''
     Semente do sampler da sessão i do nL. None se OptSeed é None (sequência diferente a cada execução).
-    Combina (OptSeed, nL, i, n_prev) com np.random.SeedSequence, n_prev = nº de trials já armazenados no estudo
-    (0 se o estudo ainda não existe). Assim:
+    Combina (OptSeed, nL, i, n_prev[, worker]) com np.random.SeedSequence, n_prev = nº de trials já armazenados no
+    estudo (0 se o estudo ainda não existe). Assim:
         - sessões e nº de camadas diferentes recebem sementes independentes (sem colisões como OptSeed + 100);
         - retomar o estudo com o mesmo OptSeed não repete as sugestões aleatórias da execução anterior
           (n_prev mudou), o que ocorria na V4_6 com RandomSampler e na fase inicial do TPE/GP;
+        - workers do mesmo estudo (processos em paralelo, worker = 0, 1, ...) que começam juntos veem o mesmo n_prev;
+          o nº do worker os separa (worker 0 mantém a semente de uma execução com um único processo);
         - o resultado é reprodutível para o mesmo OptSeed e o mesmo estado do banco.
     Retorna (seed, n_prev). Chamar depois de OptReset (estudo apagado -> n_prev = 0).
     '''
@@ -80,7 +87,17 @@ def _Seed(OptSeed, nL, i, study_name, storage):
     except KeyError:
         n_prev = 0
     if OptSeed is None: return None, n_prev
-    return int(np.random.SeedSequence([int(OptSeed), int(nL), int(i), n_prev]).generate_state(1)[0]), n_prev
+    key = [int(OptSeed), int(nL), int(i), n_prev] + ([int(worker)] if worker else [])
+    return int(np.random.SeedSequence(key).generate_state(1)[0]), n_prev
+
+
+def _Sampler(mode, seed, n_workers=1):
+    # SelSampler; com vários workers no mesmo estudo, o TPE usa constant_liar: os trials em execução nos outros
+    # processos entram no modelo com um valor pessimista, o que evita que todos sugiram a mesma região ao mesmo tempo
+    if n_workers > 1 and mode is not None and str(mode).lower() == 'tpe':
+        return optuna.samplers.TPESampler(multivariate=True, group=True, n_startup_trials=100, seed=seed,
+                                          constant_liar=True)
+    return SelSampler(mode=mode, seed=seed)
 
 
 # Combinações já testadas. A nova semente (_Seed) evita repetir a SEQUÊNCIA de sugestões da execução anterior, mas o
@@ -115,7 +132,55 @@ def _Repeat(trial, prev):
     trial.set_user_attr('repetido_de', prev.number)
     if prev.state == optuna.trial.TrialState.PRUNED: raise TrialPruned()
     for k, v in prev.user_attrs.items(): trial.set_user_attr(k, v)
-    return prev.value
+    return tuple(prev.values) if len(prev.values) > 1 else prev.value   # mode='multi': os dois objetivos
+
+
+def _Score(t):
+    # Valor escalar de um trial concluído: o objetivo (mode='single') ou a soma dos dois objetivos normalizados
+    # (mode='multi'; o trial de menor soma pertence à frente de Pareto). Mesmo critério do EarlyStoppingCallback.
+    return float(sum(t.values))
+
+
+def _ParetoMask(R, H):
+    # Pontos não dominados (minimização de R e H): varredura em ordem crescente de R (empates por H);
+    # pontos idênticos a um ponto da frente também ficam na frente
+    R, H = np.asarray(R, dtype=float), np.asarray(H, dtype=float)
+    front = np.zeros(len(R), dtype=bool)
+    best, last = np.inf, None
+    for i in np.lexsort((H, R)):
+        if H[i] < best: front[i], best, last = True, H[i], (R[i], H[i])
+        elif (R[i], H[i]) == last: front[i] = True
+    return front
+
+
+def _Lookup(seen, trial, n_workers):
+    # Combinação já testada? Com vários workers no mesmo estudo, os trials concluídos pelos outros processos só estão
+    # no banco: na falta no dicionário local, relê o estudo (uma consulta por trial novo) antes de simular
+    key = _Key(trial.params)
+    prev = seen.get(key)
+    if prev is None and n_workers > 1:
+        seen.update({k: t for k, t in _Seen(trial.study).items() if k not in seen})
+        prev = seen.get(key)
+    return prev
+
+
+def _SharedBest(callback, n_workers):
+    # Callback (antes do EarlyStoppingCallback): com vários workers, melhora encontrada por outro processo também zera
+    # a contagem de patience deste processo (patience = trials deste worker sem melhora do ESTUDO)
+    def cb(study, t):
+        if n_workers <= 1: return
+        if len(study.directions) > 1:                # mode='multi': menor soma dos objetivos na frente de Pareto
+            front = study.best_trials
+            if not front: return
+            best = min(front, key=_Score)
+        else:
+            try: best = study.best_trial
+            except ValueError: return                # nenhum trial concluído ainda
+        if best.number != t.number and _Score(best) < callback.best_score:
+            callback.best_score, callback.best_number = _Score(best), best.number
+            callback.best_trial_info = f'Trial #{best.number:03d} (outro worker) | Score: {_Score(best):.4f} | Params: {best.params}'
+            callback.trials_without_improvement = 0
+    return cb
 
 def Optimize(
         RS=None, HI=None,
@@ -126,7 +191,7 @@ def Optimize(
         N1S=None,N2S=None,N3S=None,τS =None,actS=None,
         feedback='symmetric',wtaG=False,wtaP=False,
         eol=0.3,w=1,wS=None,
-        OptReset=False,OptWarm=False,n_best=5,
+        OptReset=False,OptWarm=False,n_best=10,
         folder='Optimization'):
 
     '''
@@ -205,6 +270,8 @@ def Optimize(
     # Armazenamento persistente: um banco SQLite por configuração; cada sessão é um estudo independente e retomável
     db_path = os.path.abspath(os.path.join(folder, FileName, 'optuna.db'))
     storage = _Storage(db_path)
+    # Relógio do processo e tempo acumulado da instância (runtime.json, ao lado do optuna.db)
+    proc_t0 = ProcessStart(os.path.dirname(db_path), reset=OptReset)
     prefix = 'obj1_'
     summary = []
     nL_cur = None                                   # nº de camadas da rodada atual (laço abaixo)
@@ -282,7 +349,7 @@ def Optimize(
             # Parada antecipada conta trials sem superar o melhor resultado já armazenado
             callback = EarlyStoppingCallback(patience=patience, context={
                 'nL': [nL, nL], 'session': i+1, 'n_study': n_study, 'study_name': study_name, 'config': FileName,
-                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout,
+                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout, 'proc_t0': proc_t0,
                 'storage': storage, 'prefix': prefix})   # melhor trial por nL (todas as sessões/fases)
             if done:
                 best_prev = min(done, key=lambda t: t.value)
@@ -339,9 +406,15 @@ def OptimizeSeq(
         feedback='symmetric',wtaG=False,wtaP=False,
         eol=0.3,w=1,wS=None,agg='mean',state='keep',
         OptReset=False,OptWarm=False,n_best=10,
-        folder='Optimization',write_table=True):
+        folder='Optimization',write_table=True,worker=0,n_workers=1,mode='single'):
 
     '''
+        mode: 'single' (padrão) -> um objetivo: agg, sobre os rolamentos, de WAPE_RUL*WAPE_HI de cada rolamento;
+              'multi'           -> dois objetivos minimizados separadamente (frente de Pareto):
+                                   F_RUL = agg_b(WAPE_RUL_b) e F_HI = agg_b(WAPE_HI_b) (sem normalização).
+              Em 'multi': estudos com prefixo mseq<agg>_ (não se misturam com os seq<agg>_ do modo single no mesmo
+              banco); sem trial.report/should_prune (o Optuna não os permite com vários objetivos), as podas por
+              limiares continuam; patience e melhor trial usam a soma F_RUL + F_HI (o menor valor está na frente).
         Versão de Optimize para uma SEQUÊNCIA de rolamentos assimilada pelo mesmo modelo (AutoCloud_V4_6.restart):
             o 1º rolamento é simulado até o EoL; antes de cada rolamento seguinte, teda.restart(ref) zera RUL/HI/WAPE e
             mantém grânulos, RNNs e modelo do erro, e a simulação prossegue (mesmo procedimento da última célula).
@@ -363,9 +436,19 @@ def OptimizeSeq(
         OptPrune: poda ao fim de cada rolamento (trial.report do objetivo parcial) e por limiares dentro do rolamento.
         write_table: False = não grava o Optimization.csv ao fim (execuções em paralelo no mesmo banco: a tabela é
               gerada uma única vez com SeqTable depois que todas terminam). Retorna None nesse caso.
+        worker, n_workers: vários processos (workers) otimizando os MESMOS estudos ao mesmo tempo, no mesmo optuna.db
+              (worker = 0, ..., n_workers-1; cada processo chama OptimizeSeq com o seu nº e write_table=False).
+              O Optuna distribui os trials entre os processos pelo banco. Com n_workers > 1:
+                - a semente do sampler inclui o nº do worker (_Seed);
+                - o TPE usa constant_liar (_Sampler);
+                - combinações concluídas pelos outros workers são relidas do banco antes de simular (_Lookup);
+                - melhora encontrada por outro worker zera a contagem de patience deste (_SharedBest).
+              n_trials, timeout e patience valem POR worker.
     '''
     if not data or len(data) < 2: raise ValueError('Informe data com pelo menos dois rolamentos: [(nome, RS, HI), ...].')
     if agg not in ('mean', 'sum'): raise ValueError("agg deve ser 'mean' ou 'sum'.")
+    if mode not in ('single', 'multi'): raise ValueError("mode deve ser 'single' ou 'multi'.")
+    multi = mode == 'multi'
     if state not in ('keep', 'reset', 'fixed'): raise ValueError("state deve ser 'keep', 'reset' ou 'fixed'.")
     names_b = [str(d[0]) for d in data]
     if len(set(names_b)) != len(names_b): raise ValueError('Nomes de rolamentos repetidos em data.')
@@ -407,14 +490,17 @@ def OptimizeSeq(
         print(f'nO limitado a {nOS} para que o fluxo de todos os rolamentos alcance o EoL.')
     if nOS[0] > nOS[1]: raise ValueError(f'nOS inválido: o limite para alcançar o EoL é nO <= {nO_max}.')
 
-    obj_name = f'WAPE_{agg}'
+    obj_name = f'SCORE_{agg}' if multi else f'WAPE_{agg}'
     study_dir = os.path.join(folder, FileName, 'mono')
     os.makedirs(study_dir, exist_ok=True)
     out_path = os.path.join(study_dir, 'Optimization.csv')
 
     db_path = os.path.abspath(os.path.join(folder, FileName, 'optuna.db'))
     storage = _Storage(db_path)
-    prefix = f'seq{agg}_'                          # objetivos 'mean' e 'sum' não se misturam no mesmo banco
+    # Relógio do processo e tempo acumulado da instância (runtime.json, ao lado do optuna.db).
+    # Em paralelo, só o processo principal (worker 0) zera o histórico, para não apagar o tempo dos outros.
+    proc_t0 = ProcessStart(os.path.dirname(db_path), reset=OptReset and worker == 0)
+    prefix = _SeqPrefix(agg, mode)                 # objetivos 'mean'/'sum' e modos single/multi não se misturam no banco
     summary = []
     nL_cur = None                                   # nº de camadas da rodada atual (laço abaixo)
     seen_cur = {}                                   # combinações já testadas no estudo atual (_Seen; atualizado por _Track)
@@ -434,7 +520,7 @@ def OptimizeSeq(
         mO = trial.suggest_int('mO', mOS[0], mOS[1])
         w_ = trial.suggest_int('w', wS[0], wS[1])          # janela do DSI (fixa quando wS = None)
         if mO > nI: raise TrialPruned()
-        prev = seen_cur.get(_Key(trial.params))
+        prev = _Lookup(seen_cur, trial, n_workers)
         if prev is not None: return _Repeat(trial, prev)   # combinação já testada: reutiliza o resultado, sem simular
 
         # Janelas, EoL e RUL real de cada rolamento (com o próprio HI)
@@ -447,7 +533,7 @@ def OptimizeSeq(
 
         teda = AutoCloud(m=m,nI=nI,nR=nR,nO=nO,mO=mO,ηS=[N1,N2,N3],act=act,
                          tau=τ,eol=eol,ref=ds[0][4],wtaG=wtaG,wtaP=wtaP,feedback=feedback)
-        errs = []
+        errs, rs, hs = [], [], []
         for b, (nm, X, Y, Z, ref, J, L) in enumerate(ds):
             if b > 0: teda.restart(ref, state=state, x0=Y[0])   # mantém grânulos, pesos e modelo do erro; zera RUL/HI/WAPE
             for j in range(J):
@@ -455,16 +541,24 @@ def OptimizeSeq(
                 teda.RUL_Prediction(Y[j],mode='single',lim=L)   # WAPE_RUL do passo
                 teda.Adapt(Y[j],Z[j])                            # WAPE_HI do passo e treino das RNNs
                 if not np.isfinite(teda.hiP[-1]): raise TrialPruned()
-                if OptPrune and j >= 40 and j%5 == 0:
+                if OptPrune and j >= 30 and j%5 == 0:
                     if teda.wape_RUL > 0.6 or teda.wape_HI > 0.3: raise TrialPruned()
+            #if teda.wape_RUL > 0.25 or teda.wape_HI > 0.125: raise TrialPruned()
             wR, wH = float(teda.wape_RUL), float(teda.wape_HI)
             trial.set_user_attr(f'WAPE_RUL_{nm}', wR)
             trial.set_user_attr(f'WAPE_HI_{nm}', wH)
-            errs.append(wR + wH)
-            if OptPrune:
+            
+            #wR = (wR - 0)/(0.3 - 0)
+            #wH = (wH - 0)/(0.2 - 0) 
+            errs.append(wR * wH)
+            #errs.append(wR + wH)
+            rs.append(wR); hs.append(wH)             # mode='multi': objetivos separados
+
+            if OptPrune and not multi:
                 trial.report(Agg(errs), b)           # objetivo parcial ao fim de cada rolamento
                 if trial.should_prune(): raise TrialPruned()
-        return Agg(errs)
+        if multi: return Agg(rs), Agg(hs)
+        else: return Agg(errs)
 
     for nL in range(nLS[0], nLS[1] + 1):
         nL_cur = nL
@@ -477,48 +571,87 @@ def OptimizeSeq(
                 optuna.delete_study(study_name=study_name, storage=storage)
                 print(f'  {study_name}: estudo anterior apagado (OptReset=True).')
 
-            seed, _ = _Seed(OptSeed, nL, i, study_name, storage)   # depende de n_prev: retomada sem repetir sugestões
-            study = optuna.create_study(study_name=study_name,storage=storage,load_if_exists=True,direction='minimize',
-                                        pruner=optuna.pruners.HyperbandPruner(),sampler=SelSampler(mode=OptSampler,seed=seed))
+            seed, _ = _Seed(OptSeed, nL, i, study_name, storage, worker)   # depende de n_prev (e do worker)
+            if multi:
+                study = optuna.create_study(study_name=study_name,storage=storage,load_if_exists=True,
+                                            directions=['minimize', 'minimize'],pruner=optuna.pruners.NopPruner(),
+                                            sampler=_Sampler(OptSampler,seed,n_workers))
+            else:
+                study = optuna.create_study(study_name=study_name,storage=storage,load_if_exists=True,direction='minimize',
+                                            pruner=optuna.pruners.HyperbandPruner(),sampler=_Sampler(OptSampler,seed,n_workers))
             n_prev, done = len(study.trials), _Complete(study)
             seen_cur.clear(); seen_cur.update(_Seen(study))   # inclui as execuções anteriores (retomada)
 
-            if OptWarm:
+            if OptWarm and worker == 0:
                 others = [n for n in optuna.get_all_study_names(storage) if n.startswith(base_name + '_s') and n != study_name]
                 cand = [t for n in others for t in _Complete(optuna.load_study(study_name=n, storage=storage))]
                 if cand:
-                    best = min(cand, key=lambda t: t.value)
+                    best = min(cand, key=_Score)
                     study.enqueue_trial(best.params, skip_if_exists=True)
-                    print(f'  OptWarm: melhor trial das outras sessões enfileirado (score {best.value:.4f}).')
+                    print(f'  OptWarm: melhor trial das outras sessões enfileirado (score {_Score(best):.4f}).')
 
             callback = EarlyStoppingCallback(patience=patience, context={
                 'nL': [nL, nL], 'session': i+1, 'n_study': n_study, 'study_name': study_name, 'config': FileName,
-                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout,
+                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout, 'proc_t0': proc_t0,
                 'storage': storage, 'prefix': prefix})
             if done:
-                best_prev = min(done, key=lambda t: t.value)
-                callback.best_score = best_prev.value
+                best_prev = min(done, key=_Score)
+                callback.best_score = _Score(best_prev)
                 callback.best_number = best_prev.number
-                callback.best_trial_info = f'Trial #{best_prev.number:03d} (sessões anteriores) | Score: {best_prev.value:.4f} | Params: {best_prev.params}'
+                callback.best_trial_info = f'Trial #{best_prev.number:03d} (sessões anteriores) | Score: {_Score(best_prev):.4f} | Params: {best_prev.params}'
             print(f'  {study_name}: {n_prev} trials armazenados' + (f', melhor {callback.best_score:.4f}' if done else '')
-                  + f' | semente do sampler: {seed}')
+                  + f' | semente do sampler: {seed}' + (f' | worker {worker + 1}/{n_workers}' if n_workers > 1 else ''))
             study.optimize(objective, n_trials=None if n_trials is None else int(n_trials), timeout=timeout,
-                           callbacks=[_Track(seen_cur), callback])
+                           callbacks=[_Track(seen_cur), _SharedBest(callback, n_workers), callback])
 
             done = _Complete(study)
-            summary.append((study_name, n_prev, len(study.trials), min(t.value for t in done) if done else float('nan')))
+            summary.append((study_name, n_prev, len(study.trials), min(_Score(t) for t in done) if done else float('nan')))
 
-    print('\nResumo das sessões (banco: ' + db_path + ')')
+    print('\nResumo das sessões (banco: ' + db_path + ')' + (f' | worker {worker + 1}/{n_workers}' if n_workers > 1 else ''))
     for name, n0, n1, best in summary:
-        print(f'  {name}: {n0} -> {n1} trials | melhor {best:.4f}')
+        print(f'  {name}: {n0} -> {n1} trials (todos os workers) | melhor {best:.4f}')
 
     if not write_table:
         print('write_table=False: Optimization.csv não foi atualizado (use SeqTable ao fim de todas as janelas).')
         return None
-    return SeqTable(db_path, names_b, agg=agg, n_best=n_best, out_path=out_path, w=w)
+    return SeqTable(db_path, names_b, agg=agg, n_best=n_best, out_path=out_path, w=w, mode=mode)
 
 
-def SeqTable(db_path, names_b, agg='mean', n_best=5, out_path=None, w=1):
+def _SeqPrefix(agg, mode='single'):
+    # Prefixo dos estudos de OptimizeSeq no banco: seq<agg>_ (single, como antes) ou mseq<agg>_ (multi)
+    return f'seq{agg}_' if mode == 'single' else f'mseq{agg}_'
+
+
+def _SeqRows(db_path, names_b, agg, mode, w):
+    # Todos os trials concluídos dos estudos <prefixo de mode/agg> (uma linha por combinação de parâmetros, menor escore
+    # primeiro): escore, parâmetros, w, [OBJ_RUL_<agg>, OBJ_HI_<agg> (multi)], WAPE_RUL_<b>, WAPE_HI_<b>, _nL e
+    # [pareto (multi)]. None se não houver trial concluído.
+    multi = mode == 'multi'
+    storage = _Storage(db_path)
+    prefix = _SeqPrefix(agg, mode)
+    obj_name = f'SCORE_{agg}' if multi else f'WAPE_{agg}'
+    obj_cols = [f'OBJ_RUL_{agg}', f'OBJ_HI_{agg}'] if multi else []
+    seg_cols = [c for nm in names_b for c in (f'WAPE_RUL_{nm}', f'WAPE_HI_{nm}')]
+    rows = []
+    for name in optuna.get_all_study_names(storage):
+        if not name.startswith(prefix): continue
+        for t in _Complete(optuna.load_study(study_name=name, storage=storage)):
+            p = t.params
+            nR_list = [p[f'nR_layer_{l}'] for l in range(p['n_layers'])]
+            prm = [p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['act'],p.get('w', w)]
+            rows.append([_Score(t)] + prm + (list(t.values) if multi else [])
+                        + [t.user_attrs.get(c, np.nan) for c in seg_cols] + [p['n_layers']])
+    if not rows: return None
+    df = pd.DataFrame(rows, columns=[obj_name] + _PRM_NAMES + obj_cols + seg_cols + ['_nL'])
+    df = df.sort_values(obj_name).drop_duplicates(subset=_PRM_NAMES).reset_index(drop=True)
+    if multi: df['pareto'] = _ParetoMask(df[obj_cols[0]], df[obj_cols[1]]).astype(int)
+    return df
+
+
+_PRM_NAMES = ['m', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3', 'TAU', 'activation', 'w']
+
+
+def SeqTable(db_path, names_b, agg='mean', n_best=10, out_path=None, w=1, mode='single'):
     '''
     Reconstrói o Optimization.csv de OptimizeSeq a partir do banco do Optuna (todos os estudos seq<agg>_*), sem executar
     trials: n_best melhores por nº de camadas, com w e o WAPE de cada rolamento. Usado ao fim de OptimizeSeq e, nas
@@ -527,50 +660,73 @@ def SeqTable(db_path, names_b, agg='mean', n_best=5, out_path=None, w=1):
         names_b : nomes dos rolamentos, na ordem (ex.: ['B1_1', 'B1_2']).
         out_path: caminho do .csv; None = <pasta do banco>/mono/Optimization.csv.
         w       : valor da coluna w para trials sem o parâmetro 'w' (bancos da V4_7 ou anteriores).
+        mode    : 'single' (estudos seq<agg>_) ou 'multi' (estudos mseq<agg>_ de OptimizeSeq(mode='multi')).
+    Colunas gravadas: objetivo (WAPE_<agg>; multi: SCORE_<agg> = F_RUL + F_HI, o menor valor está na frente de Pareto),
+    os parâmetros, w e, para cada rolamento na ordem da sequência, WAPE_RUL_<b> e WAPE_HI_<b> sem normalização, finais
+    (último passo do rolamento enviado ao modelo, no EoL). A 1ª coluna é usada por BestParams/BestParamsW.
+    Linhas: n_best menores valores da 1ª coluna por nº de camadas; em 'multi', também todos os pontos da frente de
+    Pareto (os objetivos e a marcação da frente ficam em ParetoTable, não no .csv).
     '''
     if agg not in ('mean', 'sum'): raise ValueError("agg deve ser 'mean' ou 'sum'.")
+    if mode not in ('single', 'multi'): raise ValueError("mode deve ser 'single' ou 'multi'.")
+    multi = mode == 'multi'
     if not os.path.exists(db_path): raise FileNotFoundError(f'{db_path} não encontrado.')
     if out_path is None:
         os.makedirs(os.path.join(os.path.dirname(db_path), 'mono'), exist_ok=True)
         out_path = os.path.join(os.path.dirname(db_path), 'mono', 'Optimization.csv')
-    storage = _Storage(db_path)
-    prefix = f'seq{agg}_'
-    obj_name = f'WAPE_{agg}'
-    prm_names = ['m', 'nI', 'nR', 'nO', 'mO', 'N1', 'N2', 'N3', 'TAU', 'activation', 'w']
-    seg_cols = [c for nm in names_b for c in (f'WAPE_RUL_{nm}', f'WAPE_HI_{nm}')]
-    names = [obj_name] + prm_names
+    obj_name = f'SCORE_{agg}' if multi else f'WAPE_{agg}'
+    obj_cols = [f'OBJ_RUL_{agg}', f'OBJ_HI_{agg}']
+    cols = [obj_name] + _PRM_NAMES + [c for nm in names_b for c in (f'WAPE_RUL_{nm}', f'WAPE_HI_{nm}')]
 
-    # Tabela reconstruída do banco: n_best melhores por nº de camadas, com o WAPE de cada rolamento
-    rows = []
-    for name in optuna.get_all_study_names(storage):
-        if not name.startswith(prefix): continue
-        for t in _Complete(optuna.load_study(study_name=name, storage=storage)):
-            p = t.params
-            nR_list = [p[f'nR_layer_{l}'] for l in range(p['n_layers'])]
-            prm = [p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['act'],p.get('w', w)]
-            rows.append([t.value] + prm + [t.user_attrs.get(c, np.nan) for c in seg_cols] + [p['n_layers']])
-    if not rows:
+    df_all = _SeqRows(db_path, names_b, agg, mode, w)
+    if df_all is None:
         print('Nenhum trial concluído: Optimization.csv não foi gerado.')
-        return pd.DataFrame(columns=names + seg_cols)
-    df_all = pd.DataFrame(rows, columns=names + seg_cols + ['_nL'])
-    df_all = df_all.sort_values(obj_name).drop_duplicates(subset=prm_names)
-    df_stdy = df_all.groupby('_nL', group_keys=False).head(n_best)
+        return pd.DataFrame(columns=cols)
+    if multi:
+        keep = df_all.groupby('_nL', group_keys=False).head(n_best).index.union(df_all.index[df_all['pareto'] == 1])
+        df_stdy = df_all.loc[keep]
+    else:
+        df_stdy = df_all.groupby('_nL', group_keys=False).head(n_best)
     df_stdy = df_stdy.sort_values(['_nL', obj_name], ascending=[True, False])
 
-    print(f'\nOptimization.csv: {n_best} melhores por nº de camadas ({out_path})')
+    print(f'\nOptimization.csv: {n_best} melhores por nº de camadas' + (' + frente de Pareto' if multi else '')
+          + f' ({out_path})')
+    if multi:
+        fr = df_all[df_all['pareto'] == 1].sort_values(obj_cols[0])
+        print(f'  frente de Pareto: {len(fr)} pontos não dominados entre {len(df_all)} combinações '
+              f'(F_RUL de {fr[obj_cols[0]].min():.4f} a {fr[obj_cols[0]].max():.4f}, '
+              f'F_HI de {fr[obj_cols[1]].min():.4f} a {fr[obj_cols[1]].max():.4f})')
     for nL_, grp in df_stdy.groupby('_nL'):
         print(f'  nL={nL_}: {len(grp)} linhas | melhor {grp[obj_name].min():.4f} | pior mantido {grp[obj_name].max():.4f}')
 
-    df_stdy = df_stdy.drop(columns=['_nL']).reset_index(drop=True)
+    df_stdy = df_stdy[cols].reset_index(drop=True)
     df_stdy.to_csv(out_path, index=False)
     return df_stdy
+
+
+def ParetoTable(db_path, names_b, agg='mean', w=1):
+    '''
+    mode='multi': todos os trials concluídos dos estudos mseq<agg>_ (uma linha por combinação de parâmetros), com
+    SCORE_<agg>, parâmetros, w, OBJ_RUL_<agg> (F_RUL), OBJ_HI_<agg> (F_HI), WAPE de cada rolamento, nL e pareto
+    (1 = não dominado). Ordenada por SCORE (1ª linha = modelo escolhido). Não grava arquivo (gráfico da frente).
+    '''
+    if not os.path.exists(db_path): raise FileNotFoundError(f'{db_path} não encontrado.')
+    df = _SeqRows(db_path, names_b, agg, 'multi', w)
+    if df is None: return pd.DataFrame()
+    return df.rename(columns={'_nL': 'nL'})
 
 
 def BestParams(csv_path):
     '''Melhor linha (menor erro, 1ª coluna) de um Optimization.csv de Optimize/OptimizeSeq, no formato de ParseParams:
     [m, nI, nR, nO, mO, N1, N2, N3, τ, act].'''
     dfP = pd.read_csv(csv_path).iloc[:, :11]
-    return ParseParams(dfP.sort_values(dfP.columns[0], ascending=True).iloc[0, 1:].values)
+    return _Parse10(dfP.sort_values(dfP.columns[0], ascending=True).iloc[0, 1:].values)
+
+
+def _Parse10(vals10, w=1):
+    # Utils.ParseParams passou a exigir 11 itens [..., act, w]: completa com w e devolve os 10 primeiros
+    # (formato [m, nI, nR, nO, mO, N1, N2, N3, τ, act] usado por SimSeq)
+    return ParseParams(list(vals10) + [w])[:10]
 
 
 def BestParamsW(csv_path, w=1):
@@ -579,7 +735,7 @@ def BestParamsW(csv_path, w=1):
     (tabelas sem a coluna 'w', da V4_7 ou anteriores: devolve o w informado).'''
     df = pd.read_csv(csv_path)
     row = df.sort_values(df.columns[0], ascending=True).iloc[0]
-    params = ParseParams(row.iloc[1:11].values)
+    params = _Parse10(row.iloc[1:11].values)
     return params, int(row['w']) if 'w' in df.columns else int(w)
 
 
