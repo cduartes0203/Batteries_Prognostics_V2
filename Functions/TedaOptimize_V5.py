@@ -328,7 +328,7 @@ def OptimizeSeq(
         N3 = trial.suggest_int('N3', N3S[0], N3S[1])
         τ = trial.suggest_int('τ', τS[0], τS[1])
         act = trial.suggest_int('act', actS[0], actS[1])
-        mO = trial.suggest_int('mO', mOS[0], mOS[1])
+        mO = trial.suggest_int('mO', max(1, mOS[0]), min(mOS[1], nI)) 
         w_ = trial.suggest_int('w', wS[0], wS[1])          # janela do DSI (fixa quando wS = None)
         if mO > nI: raise TrialPruned()
         prev = _Lookup(seen_cur, trial, n_workers)
@@ -352,9 +352,9 @@ def OptimizeSeq(
                 teda.RUL_Prediction(Y[j],mode='single',lim=L)   # WAPE_RUL do passo
                 teda.Adapt(Y[j],Z[j])                            # WAPE_HI do passo e treino das RNNs
                 if not np.isfinite(teda.hiP[-1]): raise TrialPruned()
-                if OptPrune and j >= 30 and j%5 == 0:
+                if OptPrune and j >= 40 and j%8 == 0:
                     if teda.wape_RUL > 0.6 or teda.wape_HI > 0.3: raise TrialPruned()
-            if teda.wape_RUL > 0.25 or teda.wape_HI > 0.125: raise TrialPruned()
+            #if teda.wape_RUL > 0.25 or teda.wape_HI > 0.125: raise TrialPruned()
             wR, wH = float(teda.wape_RUL), float(teda.wape_HI)
             trial.set_user_attr(f'WAPE_RUL_{nm}', wR)
             trial.set_user_attr(f'WAPE_HI_{nm}', wH)
