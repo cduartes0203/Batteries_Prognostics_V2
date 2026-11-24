@@ -52,7 +52,7 @@ import optuna
 from optuna.exceptions import TrialPruned
 from Functions.AutoCloud_V4_6 import AutoCloud, RefEoL
 from Functions.Utils import PrepareData, ParseParams
-from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler
+from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler, ProcessStart
 
 __all__ = ['Optimize', 'OptimizeSeq', 'SeqTable', 'BestParams', 'BestParamsW', 'SimSeq', 'RefWAPE']
 
@@ -298,6 +298,8 @@ def Optimize(
     # Armazenamento persistente: um banco SQLite por configuração; cada sessão é um estudo independente e retomável
     db_path = os.path.abspath(os.path.join(folder, FileName, 'optuna.db'))
     storage = _Storage(db_path)
+    # Relógio do processo e tempo acumulado da instância (runtime.json, ao lado do optuna.db)
+    proc_t0 = ProcessStart(os.path.dirname(db_path), reset=OptReset)
     prefix = 'obj1_'
     summary = []
     nL_cur = None                                   # nº de camadas da rodada atual (laço abaixo)
@@ -375,7 +377,7 @@ def Optimize(
             # Parada antecipada conta trials sem superar o melhor resultado já armazenado
             callback = EarlyStoppingCallback(patience=patience, context={
                 'nL': [nL, nL], 'session': i+1, 'n_study': n_study, 'study_name': study_name, 'config': FileName,
-                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout,
+                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout, 'proc_t0': proc_t0,
                 'storage': storage, 'prefix': prefix})   # melhor trial por nL (todas as sessões/fases)
             if done:
                 best_prev = min(done, key=lambda t: t.value)
@@ -520,6 +522,9 @@ def OptimizeSeq(
 
     db_path = os.path.abspath(os.path.join(folder, FileName, 'optuna.db'))
     storage = _Storage(db_path)
+    # Relógio do processo e tempo acumulado da instância (runtime.json, ao lado do optuna.db).
+    # Em paralelo, só o processo principal (worker 0) zera o histórico, para não apagar o tempo dos outros.
+    proc_t0 = ProcessStart(os.path.dirname(db_path), reset=OptReset and worker == 0)
     prefix = _Prefix(agg, ref_win)                 # objetivos diferentes não se misturam no mesmo banco
     summary = []
     nL_cur = None                                   # nº de camadas da rodada atual (laço abaixo)
@@ -609,7 +614,7 @@ def OptimizeSeq(
 
             callback = EarlyStoppingCallback(patience=patience, context={
                 'nL': [nL, nL], 'session': i+1, 'n_study': n_study, 'study_name': study_name, 'config': FileName,
-                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout,
+                'n_prev': n_prev, 'n_trials': n_trials, 'timeout': timeout, 'proc_t0': proc_t0,
                 'storage': storage, 'prefix': prefix})
             if done:
                 best_prev = min(done, key=lambda t: t.value)

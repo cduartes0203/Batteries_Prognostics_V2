@@ -1,18 +1,22 @@
 '''
 Otimização do modelo AutoCloud_V4_6 (rho estático) em uma SEQUÊNCIA de rolamentos (ex.: Bearing1_1 -> Bearing1_2):
 o mesmo modelo assimila o primeiro rolamento até o EoL; antes de cada rolamento seguinte, AutoCloud.restart zera
-RUL/HI/WAPE e mantém grânulos, pesos das RNNs e modelo do erro (procedimento de Teda_R03 / TedaOptimize_V4_9.OptimizeSeq).
+RUL/HI/WAPE e mantém grânulos, pesos das RNNs e modelo do erro (procedimento de Teda_R03 / TedaOptimize_V4_8.OptimizeSeq).
 
 Mudanças em relação ao R5:
-    - usa TedaOptimize_V4_9: --agg norm (padrão) normaliza WAPE_RUL e WAPE_HI por preditores de referência, para que
-      tenham escalas comparáveis (com --agg mean, WAPE_HI ~ 20-30x menor: o objetivo era quase só a RUL).
-      Por rolamento: (WAPE_RUL/WAPE_RUL_ref + WAPE_HI/WAPE_HI_ref) / 2; objetivo = média sobre os rolamentos
-      (1 = igual às referências; < 1 = melhor). Referências (TedaOptimize_V4_9.RefWAPE), causais, nos mesmos passos
-      e pesos do modelo: persistência para o HI (h_{k+1} = h_k) e tendência linear das --ref_win últimas amostras
-      do HI, extrapolada até o EoL, para a RUL (--ref_win 0: todo o histórico; padrão 10);
-    - Optimization.csv: WAPE_norm, parâmetros, w, WAPE brutos e REF_RUL_<b> / REF_HI_<b> de cada rolamento;
-    - gráficos em IMAGES\\TedaOpt_R6\\ (pasta com o nome deste script);
-    - --ref_win no grupo execução, logo após --agg (o objetivo depende dos dois).
+    - --mode single|multi (OptimizeSeq(mode=...) da TedaOptimize_V4_8):
+        single (padrão): um objetivo: média (--agg mean) ou soma (--agg sum), sobre os rolamentos, de
+                         WAPE_RUL*WAPE_HI de cada rolamento (sem normalização);
+        multi : otimização multiobjetivo, dois objetivos minimizados separadamente:
+                F_RUL = agg_b(WAPE_RUL_b) e F_HI = agg_b(WAPE_HI_b) (frente de Pareto). Sem a poda do Hyperband
+                ao fim de cada rolamento (o Optuna não a permite com vários objetivos); as podas por limiares continuam.
+                --patience e o melhor trial usam a soma F_RUL + F_HI. Optimization.csv: SCORE_<agg> = F_RUL + F_HI
+                (1ª coluna), parâmetros, w, OBJ_RUL_<agg>, OBJ_HI_<agg>, WAPE de cada rolamento e pareto (1 = não
+                dominado); linhas = --n_best menores SCORE por nº de camadas + toda a frente de Pareto. A etapa plot
+                usa o menor SCORE (um ponto da frente) e grava também <...>_pareto.png.
+                Estudos multi usam o prefixo mseq<agg>_ e convivem com os single (seq<agg>_) na mesma instância.
+                Samplers multiobjetivo: tpe, nsgaii, random;
+    - gráficos em IMAGES\\TedaOpt_R6\\ (pasta com o nome deste script).
 
 Mudanças do R5 em relação ao R4:
     - usa TedaOptimize_V4_8: a janela do DSI em X_k (w, PrepareData) pode ser otimizada com --wS MIN MAX
@@ -53,16 +57,17 @@ Mudanças do R4 em relação ao R3:
       Faixa com até 2 nº de camadas (ex.: --nLS 1 2) ou --par 0: execução nesta janela, sem abrir outras.
       A janela de uma faixa pode ser fechada; o controle avisa e segue com as demais (os trials concluídos ficam no banco).
 
-Retomada (mesma --instancia, mesmos rolamentos, --state, --agg, --ref_win e faixas de busca): os estudos continuam do banco.
-Pode usar o mesmo --seed: a semente efetiva de cada estudo muda com o nº de trials já armazenados (TedaOptimize_V4_9._Seed),
+Retomada (mesma --instancia, mesmos rolamentos, --state, --mode, --agg e faixas de busca): os estudos continuam do banco.
+Pode usar o mesmo --seed: a semente efetiva de cada estudo muda com o nº de trials já armazenados (TedaOptimize_V4_8._Seed),
 e combinações já testadas são reaproveitadas em vez de simuladas de novo. A semente efetiva é exibida em cada estudo.
 
 Etapas (--stage):
     model : OptimizeSeq -> hiperparâmetros [m, nI, nR, nO, mO, N1, N2, N3, τ, act] e w; para CADA nº de camadas da faixa
-            --nLS, n_study sessões de n_trials trials. Objetivo = --agg norm (padrão, normalizado; ver acima), média (--agg mean) ou soma (--agg sum), sobre os
-            rolamentos, de WAPE_RUL + WAPE_HI final de cada rolamento (predições pontuais).
+            --nLS, n_study sessões de n_trials trials. Objetivo (--mode single) = média (--agg mean) ou soma
+            (--agg sum), sobre os rolamentos, de WAPE_RUL*WAPE_HI final de cada rolamento (predições
+            pontuais); --mode multi: F_RUL e F_HI separados (ver acima).
     plot  : simulação final com o melhor modelo (SimSeq, RUL intervalar com --rho e --intr_state) e gráficos de
-            PlotSimulation de cada rolamento em IMAGES\\TedaOpt_R6\\ (.png).
+            PlotSimulation de cada rolamento em IMAGES\\TedaOpt_R6\\ (.png); --mode multi: também a frente de Pareto.
     table : apenas reconstrói o mono\\Optimization.csv a partir do optuna.db (SeqTable), sem executar trials; usado ao fim
             das execuções em paralelo (uma janela por faixa de nº de camadas, mesmo banco, com --table 0).
     all   : model e plot, em ordem (padrão).
@@ -70,13 +75,15 @@ Estado recorrente das RNNs no início de cada rolamento seguinte (--state): keep
 
 Uso (na pasta principal):
     .venv\\Scripts\\python.exe -X utf8 TedaOpt_R6.py --bearings 1_1 1_2 --instancia teste1 --sampler tpe
-                                               --n_trials 1000 --nLS 1 3 --mS 1.75 2.05 --wS 1 5
+                                               --n_trials 1000 --nLS 1 3 --mS 1.75 2.05 --wS 1 5 --mode multi
     (ou TedaOpt_R6.bat: sem argumentos pergunta cada valor; --help lista os argumentos)
 Dados: Dataset\\DSIR1n\\B<b>.csv (DSI) e Dataset\\HI1\\Bearing<b>.csv (HI, coluna PC1), b = 1_1, 1_2, ...
 Resultados: Optimization\\TedaOpt_R6_<instancia>_<B1_1-B1_2>_restart[-<state>]_<feedback>_G<wtaG>P<wtaP>\\
             (optuna.db, mono\\Optimization.csv) e IMAGES\\TedaOpt_R6\\<mesmo nome>_<i>_<rolamento>.png
+            (--mode multi: também <mesmo nome>_pareto.png)
 '''
 import os
+import ast
 import sys
 import time
 import shutil
@@ -88,7 +95,8 @@ import matplotlib
 matplotlib.use('Agg')                       # gráficos salvos em arquivo, sem janela
 import matplotlib.pyplot as plt
 import pandas as pd
-from Functions.TedaOptimize_V4_9 import OptimizeSeq, SeqTable, BestParamsW, SimSeq, _Prefix
+from Functions.TedaOptimize_V4_8 import OptimizeSeq, SeqTable, ParetoTable, BestParamsW, SimSeq
+from Functions.Utils_OPT_R2 import ClearRuntime
 from Functions.TedaGraphs import PlotSimulation
 
 
@@ -100,11 +108,11 @@ parser = argparse.ArgumentParser(description='Otimização do AutoCloud_V4_6 em 
 g = parser.add_argument_group('execução')
 g.add_argument("--instancia", default="principal", help="sufixo do nome da pasta de resultados (padrão: principal)")
 g.add_argument("--stage", default="all", choices=['all', 'model', 'table', 'plot'], help="etapa(s) executada(s) (padrão: all)")
-g.add_argument("--agg", default="norm", choices=['norm', 'mean', 'sum'],
-               help="objetivo: norm = média de (WAPE_RUL/ref + WAPE_HI/ref)/2, mean = média ou sum = soma de "
-                    "WAPE_RUL + WAPE_HI dos rolamentos (padrão: norm)")
-g.add_argument("--ref_win", default=10, type=int,
-               help="--agg norm: amostras da tendência linear da RUL de referência; 0 = todo o histórico (padrão: 10)")
+g.add_argument("--mode", default="single", choices=['single', 'multi'],
+               help="single = um objetivo, agg de WAPE_RUL*WAPE_HI; multi = dois objetivos, "
+                    "F_RUL = agg(WAPE_RUL) e F_HI = agg(WAPE_HI), frente de Pareto (padrão: single)")
+g.add_argument("--agg", default="mean", choices=['mean', 'sum'],
+               help="agregação sobre os rolamentos: média ou soma (padrão: mean)")
 g.add_argument("--bearings", nargs='+', default=['1_1', '1_2'], metavar='B',
                help="rolamentos em ordem, ex.: 1_1 1_2 (padrão: 1_1 1_2)")
 g.add_argument("--table", default=1, type=int, choices=[0, 1],
@@ -182,7 +190,6 @@ if not 0 < args.eol < 1: parser.error('eol deve estar entre 0 e 1')
 if args.n_trials < 1 or args.n_study < 1: parser.error('n_trials e n_study devem ser >= 1')
 if args.n_best < 1: parser.error('n_best deve ser >= 1')
 if args.workers < 1: parser.error('workers deve ser >= 1')
-if args.ref_win < 0: parser.error('ref_win deve ser >= 0')
 if args.rho < 0: parser.error('rho deve ser >= 0')
 if len(args.bearings) < 2: parser.error('--bearings: informe pelo menos dois rolamentos')
 if len(set(args.bearings)) != len(args.bearings): parser.error('--bearings: rolamentos repetidos')
@@ -221,9 +228,10 @@ def StageModel(data, reset=None):
                 n_study=args.n_study, n_trials=args.n_trials, patience=args.patience, timeout=args.timeout,
                 mS=args.mS, nLS=args.nLS, nIS=args.nIS, nRS=args.nRS, nOS=args.nOS, mOS=args.mOS,
                 N1S=args.N1S, N2S=args.N2S, N3S=args.N3S, τS=args.tauS, actS=args.actS,
-                feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, eol=EOL, w=W, wS=args.wS, agg=args.agg, ref_win=args.ref_win, state=args.state,
+                feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, eol=EOL, w=W, wS=args.wS, agg=args.agg, state=args.state,
                 OptReset=bool(args.reset) if reset is None else reset, OptWarm=bool(args.warm), n_best=args.n_best,
-                folder=FOLDER, write_table=bool(args.table), worker=args.worker, n_workers=args.n_workers)
+                folder=FOLDER, write_table=bool(args.table), worker=args.worker, n_workers=args.n_workers,
+                mode=args.mode)
 
 
 def ResetStudies(data):
@@ -236,10 +244,11 @@ def ResetStudies(data):
     names = set(optuna.get_all_study_names(storage))
     for nL in range(args.nLS[0], args.nLS[1] + 1):
         for i in range(args.n_study):
-            name = f'{_Prefix(args.agg, args.ref_win)}L{nL}-{nL}_s{i + 1}'
+            name = f'{"seq" if args.mode == "single" else "mseq"}{args.agg}_L{nL}-{nL}_s{i + 1}'   # _SeqPrefix
             if name in names:
                 optuna.delete_study(study_name=name, storage=storage)
                 print(f'  {name}: estudo anterior apagado (--reset 1).')
+    ClearRuntime(os.path.dirname(db))    # zera também o tempo acumulado da instância (runtime.json)
 
 
 def Faixas(lo, hi):
@@ -253,7 +262,7 @@ def WorkerArgv(nl, done, k, n_trials):
     a = args
     s = lambda v: [str(x) for x in v]
     return [sys.executable, '-X', 'utf8', os.path.abspath(__file__),
-            '--instancia', a.instancia, '--stage', 'model', '--agg', a.agg, '--ref_win', str(a.ref_win), '--bearings', *a.bearings, '--table', '0',
+            '--instancia', a.instancia, '--stage', 'model', '--mode', a.mode, '--agg', a.agg, '--bearings', *a.bearings, '--table', '0',
             '--sampler', a.sampler, '--seed', str(a.seed), '--prune', str(a.prune), '--n_study', str(a.n_study),
             '--n_trials', str(n_trials), '--patience', str(a.patience), '--timeout', str(a.timeout),
             '--reset', '0', '--warm', str(a.warm), '--n_best', str(a.n_best), '--par', '0',
@@ -342,7 +351,34 @@ def Worker(data):
 def StageTable(data):
     db = os.path.abspath(os.path.join(FOLDER, Tag(data), 'optuna.db'))
     if not os.path.exists(db): raise FileNotFoundError(f'{db} não encontrado: a etapa model ainda não foi executada.')
-    SeqTable(db, [d[0] for d in data], agg=args.agg, n_best=args.n_best, w=W, ref_win=args.ref_win)
+    SeqTable(db, [d[0] for d in data], agg=args.agg, n_best=args.n_best, w=W, mode=args.mode)
+
+
+def PlotPareto(data, tag):
+    '''--mode multi: todos os trials concluídos (cinza, lidos do optuna.db por ParetoTable), frente de Pareto por nº de
+    camadas e modelo escolhido (menor SCORE = F_RUL + F_HI).'''
+    db = os.path.abspath(os.path.join(FOLDER, tag, 'optuna.db'))
+    df = ParetoTable(db, [d[0] for d in data], agg=args.agg, w=W)
+    if df.empty: return
+    xr, yh, sc = f'OBJ_RUL_{args.agg}', f'OBJ_HI_{args.agg}', f'SCORE_{args.agg}'
+    fr = df[df['pareto'] == 1].sort_values(xr)
+    sel = df.iloc[0]                                          # menor SCORE (ParetoTable ordena por SCORE)
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    ax.scatter(df[xr], df[yh], s=10, c='0.75', label=f'trials concluídos ({len(df)})', zorder=1)
+    ax.step(fr[xr], fr[yh], where='post', c='0.35', lw=0.8, zorder=2)
+    cmap = plt.get_cmap('tab10')
+    for i, (nL, g) in enumerate(fr.groupby('nL')):
+        ax.scatter(g[xr], g[yh], s=28, color=cmap(i % 10), edgecolor='k', lw=0.4, label=f'frente, {nL} camada(s)', zorder=3)
+    ax.scatter([sel[xr]], [sel[yh]], s=180, marker='*', c='gold', edgecolor='k', lw=0.8, zorder=4,
+               label=f'escolhido: F_RUL + F_HI = {sel[sc]:.3f} ({int(sel["nL"])} camada(s))')
+    ax.set_xlabel(f'F_RUL: {args.agg} de WAPE_RUL sobre os rolamentos')
+    ax.set_ylabel(f'F_HI: {args.agg} de WAPE_HI sobre os rolamentos')
+    ax.set_title(f'Frente de Pareto | {len(fr)} pontos não dominados')
+    ax.grid(True, lw=0.3, alpha=0.6)
+    ax.legend(fontsize=8, loc='best')
+    out = os.path.join(IMAGES, f'{tag}_pareto.png')
+    fig.tight_layout(); fig.savefig(out, dpi=150); plt.close(fig)
+    print(f'Frente de Pareto: {out}')
 
 
 def StagePlot(data):
@@ -351,9 +387,13 @@ def StagePlot(data):
     if not os.path.exists(csv):
         raise FileNotFoundError(f'{csv} não encontrado: a etapa model ainda não foi executada ou nenhum trial foi '
                                 f'concluído (todos podados: aumente n_trials ou use --prune 0).')
+    first = str(pd.read_csv(csv, nrows=0).columns[0])
+    if first.startswith('SCORE_') != (args.mode == 'multi'):
+        raise ValueError(f'{csv} foi gerado com outro --mode (1ª coluna {first}): rode --stage table com o --mode desejado.')
     params, w = BestParamsW(csv, w=W)
     print(f'Simulação final | params = {params} | w = {w} | rho = {args.rho} | intr_state = {args.intr_state} | state = {args.state}')
     os.makedirs(IMAGES, exist_ok=True)
+    if args.mode == 'multi': PlotPareto(data, tag)
 
     def on_end(t, name, i):                 # fim de um rolamento: gráficos deste rolamento
         out = os.path.join(IMAGES, f'{tag}_{i}_{name}.png')
@@ -368,7 +408,7 @@ def StagePlot(data):
 
 if __name__ == '__main__':
     data = LoadData(args.bearings)
-    print(f'{FileName}: stage={args.stage} | agg={args.agg} | ref_win={args.ref_win} | rolamentos={" -> ".join(d[0] for d in data)}\n'
+    print(f'{FileName}: stage={args.stage} | mode={args.mode} | agg={args.agg} | rolamentos={" -> ".join(d[0] for d in data)}\n'
           f'  Optuna: sampler={args.sampler} | seed={args.seed} | prune={bool(args.prune)} | n_study={args.n_study} | '
           f'n_trials={args.n_trials} | patience={args.patience} | timeout={args.timeout} | reset={bool(args.reset)} | '
           f'warm={bool(args.warm)} | n_best={args.n_best} | par={args.par} | workers={args.workers}\n'

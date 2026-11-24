@@ -529,6 +529,7 @@ def related_similarity(x, y):
 
 # fft calculation ########################################################################################################################
 def fft_calc(signal,rate):
+  signal = signal-np.mean(signal)
   fft_shft_abs = np.fft.fftshift(2.0 * np.abs(np.fft.fft(signal) / np.size(np.fft.fft(signal))))
   freq_shft = np.fft.fftshift(np.fft.fftfreq(np.size(fft_shft_abs), 1/rate))
   return freq_shft[(freq_shft>=0) & (freq_shft<=rate/2)], fft_shft_abs[(freq_shft>=0) & (freq_shft<=rate/2)]
@@ -546,6 +547,7 @@ def df_fft(df,rate):
 # envelope ########################################################################################################################
 
 def envelope(signal, rate):
+  signal = signal-np.mean(signal)
   amplitude_envelope = np.abs(hilbert(signal))
   amplitude_envelope = amplitude_envelope - np.mean(amplitude_envelope)
   fft_hilbert = np.fft.fftshift(2.0 * np.abs(np.fft.fft(amplitude_envelope) / np.size(np.fft.fft(amplitude_envelope))))

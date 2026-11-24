@@ -1,0 +1,8 @@
+{
+    // Fonte 25% menor na saida da otimizacao (padrao do VS Code: 14):
+    //   terminal  -> TedaOpt_R6.py / TedaOpt_R6.2.bat executados no terminal integrado
+    //   notebook  -> saida das celulas (Teda_R03.ipynb)
+    // Apenas este workspace. Para voltar ao padrao, apague as duas linhas abaixo.
+    "terminal.integrated.fontSize": 10.5,
+    "notebook.output.fontSize": 10.5
+}
