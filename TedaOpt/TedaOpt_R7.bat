@@ -9,7 +9,7 @@ rem Os valores padrao (set abaixo) podem ser editados neste arquivo.
 rem Com argumentos (terminal): repassados ao script com --stage model, ex.:
 rem     TedaOpt\TedaOpt_R7.bat --bearings 1_1 1_2 --instancia teste1 --sampler tpe --n_trials 500 --nLS 1 3
 rem Ajuda (todos os argumentos): TedaOpt\TedaOpt_R7.bat --help
-rem Com paralelo = 1, esta janela abre workers janelas por par de n. de camadas, espera todas e gera o Optimization.csv
+rem Com paralelo = 1, esta janela abre workers janelas por n. de camadas, espera todas e gera o Optimization.csv
 rem (SeqTable). n_trials e dividido entre os workers. Use no maximo ~1 processo por nucleo.
 rem Etapas table e plot: rode TedaOpt_R7.py diretamente (--stage table / --stage plot).
 rem Faixas = "minimo maximo". wS = "1 1" equivale a w = 1 fixo. actS: 0 = tanh, 1 = relu, 2 = sigmoid.
@@ -24,7 +24,7 @@ if not "%~1"=="" (
 rem ---- Valores padrao: execucao
 set "INST=principal"
 set "MODE=multi"
-set "AGG=mean"
+set "AGG=sum"
 set "BRG=1_1 1_2"
 rem ---- Valores padrao: Optuna (OptimizeSeq)
 set "SAMP=random"
@@ -36,7 +36,7 @@ set "PAT=500"
 set "TMO=3600"
 set "RESET=0"
 set "WARM=0"
-set "NBEST=10"
+set "NBEST=5"
 set "PAR=1"
 set "WRK=2"
 rem ---- Valores padrao: modelo TEDA-RNN (configuracao e faixas de busca)
@@ -78,8 +78,8 @@ set /p "TMO=timeout por sessao, em segundos [%TMO%]: "
 set /p "RESET=OptReset: 1 = APAGAR os estudos desta instancia antes de otimizar, 0 = continuar [%RESET%]: "
 set /p "WARM=OptWarm: 1 = comecar pelo melhor trial das outras sessoes, 0 = nao [%WARM%]: "
 set /p "NBEST=n_best: linhas por n. de camadas no Optimization.csv [%NBEST%]: "
-set /p "PAR=Janelas em paralelo, por par de n. de camadas (ex.: nLS 1 6 -> 1-2, 3-4, 5-6): 1 = sim, 0 = nao [%PAR%]: "
-set /p "WRK=workers: janelas por par de n. de camadas, nos mesmos estudos (com paralelo = 1) [%WRK%]: "
+set /p "PAR=Janelas em paralelo, uma por n. de camadas (ex.: nLS 1 6 -> 1, 2, 3, 4, 5, 6): 1 = sim, 0 = nao [%PAR%]: "
+set /p "WRK=workers: janelas por n. de camadas, nos mesmos estudos (com paralelo = 1) [%WRK%]: "
 echo.
 echo ---- Modelo TEDA-RNN
 set /p "STATE=Estado das RNNs no inicio de cada rolamento seguinte: keep, reset, fixed [%STATE%]: "

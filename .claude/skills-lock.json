@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "audit-ml-pipeline": {
+      "source": "probabl-ai/skore-skills",
+      "commit": "23ebe6567637f81c4130fd962ad2d2fca0bf2260",
+      "sourceType": "github",
+      "skillPath": "skills/audit-ml-pipeline/SKILL.md",
+      "computedHash": "ec050d542e820883bd50e94cb7a44536786cfb0d0b45b1bea2e22a18159d0282"
+    }
+  }
+}

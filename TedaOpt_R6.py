@@ -10,10 +10,11 @@ Mudanças em relação ao R5:
         multi : otimização multiobjetivo, dois objetivos minimizados separadamente:
                 F_RUL = agg_b(WAPE_RUL_b) e F_HI = agg_b(WAPE_HI_b) (frente de Pareto). Sem a poda do Hyperband
                 ao fim de cada rolamento (o Optuna não a permite com vários objetivos); as podas por limiares continuam.
-                --patience e o melhor trial usam a soma F_RUL + F_HI. Optimization.csv: SCORE_<agg> = F_RUL + F_HI
-                (1ª coluna), parâmetros, w, OBJ_RUL_<agg>, OBJ_HI_<agg>, WAPE de cada rolamento e pareto (1 = não
-                dominado); linhas = --n_best menores SCORE por nº de camadas + toda a frente de Pareto. A etapa plot
-                usa o menor SCORE (um ponto da frente) e grava também <...>_pareto.png.
+                --patience e o melhor trial durante a otimização usam a soma F_RUL + F_HI. Optimization.csv:
+                SCORE_<agg> = F_RUL = agg_b(WAPE_RUL_b) (1ª coluna; média, ou soma, do WAPE_RUL final dos rolamentos),
+                parâmetros, w e WAPE_RUL_<b>, WAPE_HI_<b> de cada rolamento; valores não inteiros com 3 casas decimais.
+                Linhas = --n_best menores SCORE por nº de camadas + toda a frente de Pareto. A etapa plot usa o menor
+                SCORE (menor F_RUL, um extremo da frente) e grava também <...>_pareto.png.
                 Estudos multi usam o prefixo mseq<agg>_ e convivem com os single (seq<agg>_) na mesma instância.
                 Samplers multiobjetivo: tpe, nsgaii, random;
     - gráficos em IMAGES\\TedaOpt_R6\\ (pasta com o nome deste script).
@@ -34,9 +35,9 @@ Mudanças do R5 em relação ao R4:
       padrão actS = [0, 1, 2] de OptimizeSeq, que usa apenas actS[0] e actS[1] (a sigmoid nunca era testada).
       --reset 1 APAGA os estudos da faixa --nLS (todas as sessões --n_study) antes de otimizar; em paralelo, o
       controle apaga uma única vez, antes de abrir as janelas;
-    - --workers N: N processos (janelas) por par de nº de camadas, todos nos MESMOS estudos do optuna.db
+    - --workers N: N processos (janelas) por nº de camadas, todos nos MESMOS estudos do optuna.db
       (OptimizeSeq com worker/n_workers): o Optuna distribui os trials entre eles. Ex.: --nLS 1 6 --workers 4 ->
-      12 janelas (4 para nL 1-2, 4 para 3-4 e 4 para 5-6). --n_trials continua sendo o total por sessão e por nº de
+      24 janelas (4 para cada nL de 1 a 6). --n_trials continua sendo o total por sessão e por nº de
       camadas nesta execução: cada worker recebe ceil(n_trials / N). --timeout e --patience valem por worker
       (patience: trials do worker sem melhora do estudo, considerando os trials de todos os workers).
       Cada worker usa 1 thread; use no máximo ~1 processo por núcleo (os.cpu_count()). Com mais de 4 janelas,
@@ -49,12 +50,11 @@ Mudanças do R4 em relação ao R3:
     - combinação de parâmetros já testada no estudo (inclusive em execuções anteriores) não é simulada de novo;
     - gráficos da etapa plot em IMAGES\\TedaRNN_Opt_R4\\ (pasta com o nome deste script), apenas .png
       (sem .pdf e sem o resumo .csv; as métricas de cada rolamento são exibidas no terminal);
-    - --par 1 (padrão): etapa model em paralelo, uma janela por PAR de nº de camadas da faixa --nLS
-      (substitui o TedaRNN_Opt_R3_Par.bat). Ex.: --nLS 1 6 -> 3 janelas com nL = [1, 2], [3, 4] e [5, 6];
-      --nLS 1 5 -> [1, 2], [3, 4] e [5, 5]. Cada janela otimiza seus nº de camadas em sequência, no mesmo optuna.db
-      (estudos distintos por nº de camadas). Esta janela (controle) espera todas terminarem, gera o Optimization.csv
+    - --par 1 (padrão): etapa model em paralelo, uma janela por nº de camadas da faixa --nLS (até o R7 de 25/11/2026:
+      uma janela por PAR, [1, 2], [3, 4], ...). Ex.: --nLS 1 6 -> 6 janelas, nL = 1, 2, ..., 6; todas no mesmo
+      optuna.db (estudos distintos por nº de camadas). Esta janela (controle) espera todas terminarem, gera o Optimization.csv
       uma única vez (etapa table) e, com --stage all, executa a etapa plot com o melhor modelo entre todas as faixas.
-      Faixa com até 2 nº de camadas (ex.: --nLS 1 2) ou --par 0: execução nesta janela, sem abrir outras.
+      Faixa com um único nº de camadas e --workers 1 (ex.: --nLS 2 2) ou --par 0: execução nesta janela, sem abrir outras.
       A janela de uma faixa pode ser fechada; o controle avisa e segue com as demais (os trials concluídos ficam no banco).
 
 Retomada (mesma --instancia, mesmos rolamentos, --state, --mode, --agg e faixas de busca): os estudos continuam do banco.
@@ -132,9 +132,9 @@ g.add_argument("--warm", default=0, type=int, choices=[0, 1],
                help="OptWarm: 1 = começa pelo melhor trial das outras sessões do mesmo nº de camadas (padrão: 0)")
 g.add_argument("--n_best", default=10, type=int, help="linhas por nº de camadas no Optimization.csv (padrão: 10)")
 g.add_argument("--par", default=1, type=int, choices=[0, 1],
-               help="etapa model: 1 = uma janela por par de nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
+               help="etapa model: 1 = uma janela por nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
 g.add_argument("--workers", default=1, type=int,
-               help="etapa model em paralelo: processos (janelas) por par de nº de camadas, todos nos mesmos estudos; "
+               help="etapa model em paralelo: processos (janelas) por nº de camadas, todos nos mesmos estudos; "
                     "--n_trials é dividido entre eles (padrão: 1)")
 # --- Modelo (AutoCloud / eRNN): configuração e faixas de busca
 g = parser.add_argument_group('modelo TEDA-RNN (configuração e faixas de busca)')
@@ -172,7 +172,7 @@ args = parser.parse_args()
 def check(name, r, low):
     if not low <= r[0] <= r[1]:
         parser.error(f'{name}: requer {low} <= MIN <= MAX (recebido {r[0]} {r[1]})')
-check('mS', args.mS, 0.025)
+check('mS', args.mS, 0.05)
 check('nLS', args.nLS, 1)
 check('nIS', args.nIS, 1)
 check('nRS', args.nRS, 1)
@@ -252,8 +252,13 @@ def ResetStudies(data):
 
 
 def Faixas(lo, hi):
-    # Pares de nº de camadas, um por janela: [1, 6] -> [[1, 2], [3, 4], [5, 6]]; [1, 5] -> [[1, 2], [3, 4], [5, 5]]
-    return [[a, min(a + 1, hi)] for a in range(lo, hi + 1, 2)]
+    # Um nº de camadas por janela: [1, 6] -> [[1, 1], [2, 2], ..., [6, 6]] (antes: pares [1, 2], [3, 4], [5, 6])
+    return [[a, a] for a in range(lo, hi + 1)]
+
+
+def Lbl(nl):
+    # Rótulo da faixa de camadas: '3' (um nº de camadas) ou '1-2'
+    return f'{nl[0]}' if nl[0] == nl[1] else f'{nl[0]}-{nl[1]}'
 
 
 def WorkerArgv(nl, done, k, n_trials):
@@ -274,7 +279,7 @@ def WorkerArgv(nl, done, k, n_trials):
 
 
 def StageModelPar(data):
-    '''Etapa model com args.workers janelas por par de nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
+    '''Etapa model com args.workers janelas por nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
     faixas = Faixas(*args.nLS)
     nW = args.workers
     if len(faixas) * nW == 1 or os.name != 'nt':
@@ -295,7 +300,7 @@ def StageModelPar(data):
         si.wShowWindow = 7                                             # SW_SHOWMINNOACTIVE
     jobs = []
     print(f'\nEtapa model em paralelo: {n_jobs} janelas = {len(faixas)} faixa(s) x {nW} worker(s) | '
-          + ' | '.join(f'nL {a}-{b}' for a, b in faixas)
+          + ' | '.join(f'nL {Lbl(nl)}' for nl in faixas)
           + (f' | {n_tr} trials por worker, por sessão e por nº de camadas' if nW > 1 else ''))
     for nl in faixas:
         for k in range(nW):
@@ -303,14 +308,14 @@ def StageModelPar(data):
             p = subprocess.Popen(WorkerArgv(nl, done, k, n_tr), cwd=os.getcwd(), env=env,
                                  creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=si)
             jobs.append((nl, k, p, done))
-            print(f'  janela aberta: camadas {nl[0]} a {nl[1]}' + (f', worker {k + 1}/{nW}' if nW > 1 else ''))
+            print(f'  janela aberta: nL {Lbl(nl)}' + (f', worker {k + 1}/{nW}' if nW > 1 else ''))
             time.sleep(5 if len(jobs) == 1 else 1)   # a 1ª janela cria o optuna.db; as demais o encontram pronto
     print('Aguardando as janelas (verificação a cada 10 s; Ctrl+C encerra apenas esta espera, as janelas continuam)...')
     status = {}
     while len(status) < len(jobs):
         time.sleep(10)
         for nl, k, p, done in jobs:
-            key = f'{nl[0]}-{nl[1]}' + (f' worker {k + 1}' if nW > 1 else '')
+            key = f'nL {Lbl(nl)}' + (f' worker {k + 1}' if nW > 1 else '')
             if key in status: continue
             if os.path.exists(done):        # gravado pela janela antes da pausa final
                 with open(done) as f: rc = f.read().strip()
@@ -318,7 +323,7 @@ def StageModelPar(data):
             elif p.poll() is not None:      # janela fechada antes de terminar
                 status[key] = 'interrompida (janela fechada)'
             else: continue
-            print(f'  camadas {key}: {status[key]}')
+            print(f'  {key}: {status[key]}')
     shutil.rmtree(ctrl, ignore_errors=True)
     print('\nTodas as janelas terminaram. Gerando o Optimization.csv a partir do banco comum...')
     StageTable(data)
@@ -327,7 +332,7 @@ def StageModelPar(data):
 def Worker(data):
     '''Janela de uma faixa: etapa model; grava o arquivo de término. Fecha sozinha ao concluir; em caso de erro,
     espera Enter (para ler a mensagem).'''
-    title = f'{ScriptName} {args.instancia} - camadas {args.nLS[0]} a {args.nLS[1]}' + \
+    title = f'{ScriptName} {args.instancia} - nL {Lbl(args.nLS)}' + \
             (f' - worker {args.worker + 1}/{args.n_workers}' if args.n_workers > 1 else '')
     try:
         import ctypes
@@ -356,13 +361,13 @@ def StageTable(data):
 
 def PlotPareto(data, tag):
     '''--mode multi: todos os trials concluídos (cinza, lidos do optuna.db por ParetoTable), frente de Pareto por nº de
-    camadas e modelo escolhido (menor SCORE = F_RUL + F_HI).'''
+    camadas e modelo escolhido (menor SCORE = menor F_RUL).'''
     db = os.path.abspath(os.path.join(FOLDER, tag, 'optuna.db'))
     df = ParetoTable(db, [d[0] for d in data], agg=args.agg, w=W)
     if df.empty: return
     xr, yh, sc = f'OBJ_RUL_{args.agg}', f'OBJ_HI_{args.agg}', f'SCORE_{args.agg}'
     fr = df[df['pareto'] == 1].sort_values(xr)
-    sel = df.iloc[0]                                          # menor SCORE (ParetoTable ordena por SCORE)
+    sel = df.iloc[0]                                          # menor SCORE = menor F_RUL (ParetoTable ordena por SCORE)
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     ax.scatter(df[xr], df[yh], s=10, c='0.75', label=f'trials concluídos ({len(df)})', zorder=1)
     ax.step(fr[xr], fr[yh], where='post', c='0.35', lw=0.8, zorder=2)
@@ -370,7 +375,7 @@ def PlotPareto(data, tag):
     for i, (nL, g) in enumerate(fr.groupby('nL')):
         ax.scatter(g[xr], g[yh], s=28, color=cmap(i % 10), edgecolor='k', lw=0.4, label=f'frente, {nL} camada(s)', zorder=3)
     ax.scatter([sel[xr]], [sel[yh]], s=180, marker='*', c='gold', edgecolor='k', lw=0.8, zorder=4,
-               label=f'escolhido: F_RUL + F_HI = {sel[sc]:.3f} ({int(sel["nL"])} camada(s))')
+               label=f'escolhido: F_RUL = {sel[sc]:.3f}, F_HI = {sel[yh]:.3f} ({int(sel["nL"])} camada(s))')
     ax.set_xlabel(f'F_RUL: {args.agg} de WAPE_RUL sobre os rolamentos')
     ax.set_ylabel(f'F_HI: {args.agg} de WAPE_HI sobre os rolamentos')
     ax.set_title(f'Frente de Pareto | {len(fr)} pontos não dominados')
