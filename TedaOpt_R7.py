@@ -9,7 +9,8 @@ Mudanças em relação ao R6:
       A otimização do rho (OptimizeRho, TedaOptimize_V5) ainda não está neste script;
     - --bearings aceita um único rolamento (otimização de um rolamento, sem restart);
     - o .bat fica em TedaOpt\TedaOpt_R7.bat (roda da pasta principal) e executa apenas a etapa model (OptimizeSeq);
-    - gráficos em IMAGES\TedaOpt_R7\ (pasta com o nome deste script).
+    - gráficos em IMAGES\TedaOpt_R7\ (pasta com o nome deste script);
+    - --par 1: uma janela por nº de camadas (antes, por par de nº de camadas), como no R6 atualizado.
 
 Mudanças do R6 em relação ao R5:
     - --mode single|multi (OptimizeSeq(mode=...) da TedaOptimize_V4_8):
@@ -18,10 +19,11 @@ Mudanças do R6 em relação ao R5:
         multi : otimização multiobjetivo, dois objetivos minimizados separadamente:
                 F_RUL = agg_b(WAPE_RUL_b) e F_HI = agg_b(WAPE_HI_b) (frente de Pareto). Sem a poda do Hyperband
                 ao fim de cada rolamento (o Optuna não a permite com vários objetivos); as podas por limiares continuam.
-                --patience e o melhor trial usam a soma F_RUL + F_HI. Optimization.csv: SCORE_<agg> = F_RUL + F_HI
-                (1ª coluna), parâmetros, w, OBJ_RUL_<agg>, OBJ_HI_<agg>, WAPE de cada rolamento e pareto (1 = não
-                dominado); linhas = --n_best menores SCORE por nº de camadas + toda a frente de Pareto. A etapa plot
-                usa o menor SCORE (um ponto da frente) e grava também <...>_pareto.png.
+                --patience e o melhor trial durante a otimização usam a soma F_RUL + F_HI. Optimization.csv:
+                SCORE_<agg> = F_RUL = agg_b(WAPE_RUL_b) (1ª coluna; média, ou soma, do WAPE_RUL final dos rolamentos),
+                parâmetros, w e WAPE_RUL_<b>, WAPE_HI_<b> de cada rolamento; valores não inteiros com 3 casas decimais.
+                Linhas = --n_best menores SCORE por nº de camadas + toda a frente de Pareto. A etapa plot usa o menor
+                SCORE (menor F_RUL, um extremo da frente) e grava também <...>_pareto.png.
                 Estudos multi usam o prefixo mseq<agg>_ e convivem com os single (seq<agg>_) na mesma instância.
                 Samplers multiobjetivo: tpe, nsgaii, random;
     - gráficos em IMAGES\\TedaOpt_R6\\ (pasta com o nome deste script).
@@ -42,9 +44,9 @@ Mudanças do R5 em relação ao R4:
       padrão actS = [0, 1, 2] de OptimizeSeq, que usa apenas actS[0] e actS[1] (a sigmoid nunca era testada).
       --reset 1 APAGA os estudos da faixa --nLS (todas as sessões --n_study) antes de otimizar; em paralelo, o
       controle apaga uma única vez, antes de abrir as janelas;
-    - --workers N: N processos (janelas) por par de nº de camadas, todos nos MESMOS estudos do optuna.db
+    - --workers N: N processos (janelas) por nº de camadas, todos nos MESMOS estudos do optuna.db
       (OptimizeSeq com worker/n_workers): o Optuna distribui os trials entre eles. Ex.: --nLS 1 6 --workers 4 ->
-      12 janelas (4 para nL 1-2, 4 para 3-4 e 4 para 5-6). --n_trials continua sendo o total por sessão e por nº de
+      24 janelas (4 para cada nL de 1 a 6). --n_trials continua sendo o total por sessão e por nº de
       camadas nesta execução: cada worker recebe ceil(n_trials / N). --timeout e --patience valem por worker
       (patience: trials do worker sem melhora do estudo, considerando os trials de todos os workers).
       Cada worker usa 1 thread; use no máximo ~1 processo por núcleo (os.cpu_count()). Com mais de 4 janelas,
@@ -57,12 +59,11 @@ Mudanças do R4 em relação ao R3:
     - combinação de parâmetros já testada no estudo (inclusive em execuções anteriores) não é simulada de novo;
     - gráficos da etapa plot em IMAGES\\TedaRNN_Opt_R4\\ (pasta com o nome deste script), apenas .png
       (sem .pdf e sem o resumo .csv; as métricas de cada rolamento são exibidas no terminal);
-    - --par 1 (padrão): etapa model em paralelo, uma janela por PAR de nº de camadas da faixa --nLS
-      (substitui o TedaRNN_Opt_R3_Par.bat). Ex.: --nLS 1 6 -> 3 janelas com nL = [1, 2], [3, 4] e [5, 6];
-      --nLS 1 5 -> [1, 2], [3, 4] e [5, 5]. Cada janela otimiza seus nº de camadas em sequência, no mesmo optuna.db
-      (estudos distintos por nº de camadas). Esta janela (controle) espera todas terminarem, gera o Optimization.csv
+    - --par 1 (padrão): etapa model em paralelo, uma janela por nº de camadas da faixa --nLS (até o R7 de 25/11/2026:
+      uma janela por PAR, [1, 2], [3, 4], ...). Ex.: --nLS 1 6 -> 6 janelas, nL = 1, 2, ..., 6; todas no mesmo
+      optuna.db (estudos distintos por nº de camadas). Esta janela (controle) espera todas terminarem, gera o Optimization.csv
       uma única vez (etapa table) e, com --stage all, executa a etapa plot com o melhor modelo entre todas as faixas.
-      Faixa com até 2 nº de camadas (ex.: --nLS 1 2) ou --par 0: execução nesta janela, sem abrir outras.
+      Faixa com um único nº de camadas e --workers 1 (ex.: --nLS 2 2) ou --par 0: execução nesta janela, sem abrir outras.
       A janela de uma faixa pode ser fechada; o controle avisa e segue com as demais (os trials concluídos ficam no banco).
 
 Retomada (mesma --instancia, mesmos rolamentos, --state, --mode, --agg e faixas de busca): os estudos continuam do banco.
@@ -78,6 +79,13 @@ Etapas (--stage):
             PlotSimulation de cada rolamento em IMAGES\\TedaOpt_R7\\ (.png); --mode multi: também a frente de Pareto.
     table : apenas reconstrói o mono\\Optimization.csv a partir do optuna.db (SeqTable), sem executar trials; usado ao fim
             das execuções em paralelo (uma janela por faixa de nº de camadas, mesmo banco, com --table 0).
+    test  : avaliação em rolamentos que a otimização nunca viu (--test_bearings, padrão 1_3 1_4 1_5), com os
+            --test_top melhores conjuntos do Optimization.csv (escolhidos só com --bearings) FIXOS; o modelo continua
+            aprendendo online (causal). --test_warm 1: percorre antes os rolamentos de --bearings. Compara com
+            referências causais nos mesmos passos e pesos (persistência para o HI; tendência linear de --ref_win
+            amostras para a RUL). Resultados em <instância>\\test\\Test_<rolamentos de teste>.csv e gráficos do modelo
+            escolhido em IMAGES\\TedaOpt_R7\\<instância>_test_<i>_<rolamento>.png. Não faz parte de all.
+            (ou TedaOpt\\TedaOpt_R7_Test.bat)
     all   : model e plot, em ordem (padrão).
 Estado recorrente das RNNs no início de cada rolamento seguinte (--state): keep (padrão), reset ou fixed (AutoCloud.restart).
 
@@ -103,7 +111,11 @@ import matplotlib
 matplotlib.use('Agg')                       # gráficos salvos em arquivo, sem janela
 import matplotlib.pyplot as plt
 import pandas as pd
-from Functions.TedaOptimize_V5 import OptimizeSeq, SeqTable, ParetoTable, BestParamsW, SimSeq
+import numpy as np
+from Functions.TedaOptimize_V5 import OptimizeSeq, SeqTable, ParetoTable, BestParamsW, SimSeq, _Parse10
+from Functions.TedaOptimize_V4_9 import RefWAPE      # referências (persistência / tendência linear) da etapa test
+from Functions.AutoCloud_V5 import RefEoL
+from Functions.Utils import PrepareData
 from Functions.Utils_OPT_R2 import ClearRuntime
 from Functions.TedaGraphs import PlotSimulation
 
@@ -115,7 +127,8 @@ parser = argparse.ArgumentParser(description='Otimização do AutoCloud_V4_6 em 
 # --- Execução
 g = parser.add_argument_group('execução')
 g.add_argument("--instancia", default="principal", help="sufixo do nome da pasta de resultados (padrão: principal)")
-g.add_argument("--stage", default="all", choices=['all', 'model', 'table', 'plot'], help="etapa(s) executada(s) (padrão: all)")
+g.add_argument("--stage", default="all", choices=['all', 'model', 'table', 'plot', 'test'],
+               help="etapa(s) executada(s); test = avaliação nos rolamentos --test_bearings (padrão: all)")
 g.add_argument("--mode", default="single", choices=['single', 'multi'],
                help="single = um objetivo, agg de WAPE_RUL*WAPE_HI; multi = dois objetivos, "
                     "F_RUL = agg(WAPE_RUL) e F_HI = agg(WAPE_HI), frente de Pareto (padrão: single)")
@@ -125,6 +138,16 @@ g.add_argument("--bearings", nargs='+', default=['1_1', '1_2'], metavar='B',
                help="rolamentos em ordem, ex.: 1_1 1_2 (padrão: 1_1 1_2)")
 g.add_argument("--table", default=1, type=int, choices=[0, 1],
                help="etapa model: 1 = grava o Optimization.csv ao fim; 0 = não grava (execuções em paralelo) (padrão: 1)")
+g.add_argument("--test_bearings", nargs='+', default=['1_3', '1_4', '1_5'], metavar='B',
+               help="etapa test: rolamentos de teste, em ordem, nunca usados na otimização (padrão: 1_3 1_4 1_5)")
+g.add_argument("--test_top", default=5, type=int,
+               help="etapa test: avalia os K melhores conjuntos de parâmetros do Optimization.csv, na ordem do erro de "
+                    "otimização (o 1º é o modelo escolhido; os demais medem a sensibilidade da escolha) (padrão: 5)")
+g.add_argument("--test_warm", default=1, type=int, choices=[0, 1],
+               help="etapa test: 1 = o modelo percorre antes os rolamentos de --bearings e chega aos de teste já treinado "
+                    "(online, com restart); 0 = começa do zero no 1º rolamento de teste (padrão: 1)")
+g.add_argument("--ref_win", default=10, type=int,
+               help="etapa test: amostras da tendência linear da RUL de referência (0 = todo o histórico) (padrão: 10)")
 # --- Optuna (OptimizeSeq)
 g = parser.add_argument_group('Optuna (OptimizeSeq)')
 g.add_argument("--sampler", default="random", type=str.lower, choices=SAMPLERS, help="OptSampler (padrão: random)")
@@ -140,9 +163,9 @@ g.add_argument("--warm", default=0, type=int, choices=[0, 1],
                help="OptWarm: 1 = começa pelo melhor trial das outras sessões do mesmo nº de camadas (padrão: 0)")
 g.add_argument("--n_best", default=10, type=int, help="linhas por nº de camadas no Optimization.csv (padrão: 10)")
 g.add_argument("--par", default=1, type=int, choices=[0, 1],
-               help="etapa model: 1 = uma janela por par de nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
+               help="etapa model: 1 = uma janela por nº de camadas de --nLS, em paralelo; 0 = tudo nesta janela (padrão: 1)")
 g.add_argument("--workers", default=1, type=int,
-               help="etapa model em paralelo: processos (janelas) por par de nº de camadas, todos nos mesmos estudos; "
+               help="etapa model em paralelo: processos (janelas) por nº de camadas, todos nos mesmos estudos; "
                     "--n_trials é dividido entre eles (padrão: 1)")
 # --- Modelo (AutoCloud / eRNN): configuração e faixas de busca
 g = parser.add_argument_group('modelo TEDA-RNN (configuração e faixas de busca)')
@@ -201,6 +224,12 @@ if args.workers < 1: parser.error('workers deve ser >= 1')
 if args.rho < 0: parser.error('rho deve ser >= 0')
 if len(args.bearings) < 1: parser.error('--bearings: informe pelo menos um rolamento')
 if len(set(args.bearings)) != len(args.bearings): parser.error('--bearings: rolamentos repetidos')
+if args.stage == 'test':
+    if len(set(args.test_bearings)) != len(args.test_bearings): parser.error('--test_bearings: rolamentos repetidos')
+    if set(args.test_bearings) & set(args.bearings):
+        parser.error('--test_bearings: rolamentos de teste não podem estar em --bearings (usados na otimização)')
+if args.test_top < 1: parser.error('test_top deve ser >= 1')
+if args.ref_win < 0: parser.error('ref_win deve ser >= 0')
 
 ScriptName = os.path.splitext(os.path.basename(__file__))[0]   # 'TedaOpt_R7'
 FileName = ScriptName + "_" + args.instancia
@@ -260,8 +289,13 @@ def ResetStudies(data):
 
 
 def Faixas(lo, hi):
-    # Pares de nº de camadas, um por janela: [1, 6] -> [[1, 2], [3, 4], [5, 6]]; [1, 5] -> [[1, 2], [3, 4], [5, 5]]
-    return [[a, min(a + 1, hi)] for a in range(lo, hi + 1, 2)]
+    # Um nº de camadas por janela: [1, 6] -> [[1, 1], [2, 2], ..., [6, 6]] (antes: pares [1, 2], [3, 4], [5, 6])
+    return [[a, a] for a in range(lo, hi + 1)]
+
+
+def Lbl(nl):
+    # Rótulo da faixa de camadas: '3' (um nº de camadas) ou '1-2'
+    return f'{nl[0]}' if nl[0] == nl[1] else f'{nl[0]}-{nl[1]}'
 
 
 def WorkerArgv(nl, done, k, n_trials):
@@ -282,7 +316,7 @@ def WorkerArgv(nl, done, k, n_trials):
 
 
 def StageModelPar(data):
-    '''Etapa model com args.workers janelas por par de nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
+    '''Etapa model com args.workers janelas por nº de camadas; espera todas e gera o Optimization.csv (StageTable).'''
     faixas = Faixas(*args.nLS)
     nW = args.workers
     if len(faixas) * nW == 1 or os.name != 'nt':
@@ -303,7 +337,7 @@ def StageModelPar(data):
         si.wShowWindow = 7                                             # SW_SHOWMINNOACTIVE
     jobs = []
     print(f'\nEtapa model em paralelo: {n_jobs} janelas = {len(faixas)} faixa(s) x {nW} worker(s) | '
-          + ' | '.join(f'nL {a}-{b}' for a, b in faixas)
+          + ' | '.join(f'nL {Lbl(nl)}' for nl in faixas)
           + (f' | {n_tr} trials por worker, por sessão e por nº de camadas' if nW > 1 else ''))
     for nl in faixas:
         for k in range(nW):
@@ -311,14 +345,14 @@ def StageModelPar(data):
             p = subprocess.Popen(WorkerArgv(nl, done, k, n_tr), cwd=os.getcwd(), env=env,
                                  creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=si)
             jobs.append((nl, k, p, done))
-            print(f'  janela aberta: camadas {nl[0]} a {nl[1]}' + (f', worker {k + 1}/{nW}' if nW > 1 else ''))
+            print(f'  janela aberta: nL {Lbl(nl)}' + (f', worker {k + 1}/{nW}' if nW > 1 else ''))
             time.sleep(5 if len(jobs) == 1 else 1)   # a 1ª janela cria o optuna.db; as demais o encontram pronto
     print('Aguardando as janelas (verificação a cada 10 s; Ctrl+C encerra apenas esta espera, as janelas continuam)...')
     status = {}
     while len(status) < len(jobs):
         time.sleep(10)
         for nl, k, p, done in jobs:
-            key = f'{nl[0]}-{nl[1]}' + (f' worker {k + 1}' if nW > 1 else '')
+            key = f'nL {Lbl(nl)}' + (f' worker {k + 1}' if nW > 1 else '')
             if key in status: continue
             if os.path.exists(done):        # gravado pela janela antes da pausa final
                 with open(done) as f: rc = f.read().strip()
@@ -326,7 +360,7 @@ def StageModelPar(data):
             elif p.poll() is not None:      # janela fechada antes de terminar
                 status[key] = 'interrompida (janela fechada)'
             else: continue
-            print(f'  camadas {key}: {status[key]}')
+            print(f'  {key}: {status[key]}')
     shutil.rmtree(ctrl, ignore_errors=True)
     print('\nTodas as janelas terminaram. Gerando o Optimization.csv a partir do banco comum...')
     StageTable(data)
@@ -335,7 +369,7 @@ def StageModelPar(data):
 def Worker(data):
     '''Janela de uma faixa: etapa model; grava o arquivo de término. Fecha sozinha ao concluir; em caso de erro,
     espera Enter (para ler a mensagem).'''
-    title = f'{ScriptName} {args.instancia} - camadas {args.nLS[0]} a {args.nLS[1]}' + \
+    title = f'{ScriptName} {args.instancia} - nL {Lbl(args.nLS)}' + \
             (f' - worker {args.worker + 1}/{args.n_workers}' if args.n_workers > 1 else '')
     try:
         import ctypes
@@ -364,13 +398,13 @@ def StageTable(data):
 
 def PlotPareto(data, tag):
     '''--mode multi: todos os trials concluídos (cinza, lidos do optuna.db por ParetoTable), frente de Pareto por nº de
-    camadas e modelo escolhido (menor SCORE = F_RUL + F_HI).'''
+    camadas e modelo escolhido (menor SCORE = menor F_RUL).'''
     db = os.path.abspath(os.path.join(FOLDER, tag, 'optuna.db'))
     df = ParetoTable(db, [d[0] for d in data], agg=args.agg, w=W)
     if df.empty: return
     xr, yh, sc = f'OBJ_RUL_{args.agg}', f'OBJ_HI_{args.agg}', f'SCORE_{args.agg}'
     fr = df[df['pareto'] == 1].sort_values(xr)
-    sel = df.iloc[0]                                          # menor SCORE (ParetoTable ordena por SCORE)
+    sel = df.iloc[0]                                          # menor SCORE = menor F_RUL (ParetoTable ordena por SCORE)
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     ax.scatter(df[xr], df[yh], s=10, c='0.75', label=f'trials concluídos ({len(df)})', zorder=1)
     ax.step(fr[xr], fr[yh], where='post', c='0.35', lw=0.8, zorder=2)
@@ -378,7 +412,7 @@ def PlotPareto(data, tag):
     for i, (nL, g) in enumerate(fr.groupby('nL')):
         ax.scatter(g[xr], g[yh], s=28, color=cmap(i % 10), edgecolor='k', lw=0.4, label=f'frente, {nL} camada(s)', zorder=3)
     ax.scatter([sel[xr]], [sel[yh]], s=180, marker='*', c='gold', edgecolor='k', lw=0.8, zorder=4,
-               label=f'escolhido: F_RUL + F_HI = {sel[sc]:.3f} ({int(sel["nL"])} camada(s))')
+               label=f'escolhido: F_RUL = {sel[sc]:.3f}, F_HI = {sel[yh]:.3f} ({int(sel["nL"])} camada(s))')
     ax.set_xlabel(f'F_RUL: {args.agg} de WAPE_RUL sobre os rolamentos')
     ax.set_ylabel(f'F_HI: {args.agg} de WAPE_HI sobre os rolamentos')
     ax.set_title(f'Frente de Pareto | {len(fr)} pontos não dominados')
@@ -414,6 +448,102 @@ def StagePlot(data):
            eol=EOL, w=w, feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, on_end=on_end)
 
 
+def TopParams(csv, k):
+    '''Os k melhores conjuntos de parâmetros distintos do Optimization.csv, em ordem crescente da 1ª coluna (erro de
+    otimização: WAPE_<agg> ou SCORE_<agg>). Retorna [(posição, erro, params, w)], params no formato de SimSeq
+    [m, nI, nR, nO, mO, N1, N2, N3, τ, act] (mesma leitura de BestParamsW).'''
+    df = pd.read_csv(csv)
+    prm = list(df.columns[1:11]) + (['w'] if 'w' in df.columns else [])
+    df = df.sort_values(df.columns[0], ascending=True).drop_duplicates(subset=prm).head(k)
+    out = []
+    for r, (_, row) in enumerate(df.iterrows()):
+        w = int(row['w']) if 'w' in df.columns else W
+        out.append((r + 1, float(row.iloc[0]), _Parse10(row.iloc[1:11].values, w), w))
+    return out
+
+
+def RefTest(nm, RS_b, HI_b, params, w):
+    '''WAPE das referências causais (TedaOptimize_V4_9.RefWAPE) nos MESMOS passos e pesos (k - k_seg)^2 do modelo:
+    persistência para o HI (h_{k+1} = h_k) e tendência linear das --ref_win últimas amostras para a RUL.'''
+    _, nI, _, nO, mO = params[:5]
+    sig = np.asarray(HI_b, dtype=float).ravel()
+    _, _, _, kX = PrepareData(RS_b, HI_b, w, nI, nO, mO)
+    _, J, L = RefEoL(sig, EOL, kX)
+    return RefWAPE(sig, EOL, kX, J, L, args.ref_win)
+
+
+def StageTest(data):
+    '''
+    Avaliação em rolamentos que a otimização nunca viu (--test_bearings). Os hiperparâmetros vêm do Optimization.csv
+    desta instância (escolhidos apenas com --bearings) e ficam FIXOS; o modelo continua aprendendo online (causal), como
+    em toda simulação. Com --test_warm 1, percorre antes os rolamentos de --bearings (restart entre rolamentos) e chega
+    aos de teste já treinado; com 0, começa do zero no 1º rolamento de teste. As métricas de teste são as dos
+    rolamentos de --test_bearings; as dos rolamentos de --bearings (otimização) aparecem para comparação.
+    São avaliados os --test_top melhores conjuntos (o 1º é o modelo escolhido). Referências (REF_RUL, REF_HI) nos
+    mesmos passos e pesos. Resultados: Optimization\\<instância>\\test\\Test_<rolamentos de teste>[_frio].csv e
+    gráficos do modelo escolhido em IMAGES\\TedaOpt_R7\\<instância>_test_<i>_<rolamento>.png.
+    '''
+    tag = Tag(data)
+    csv = os.path.join(FOLDER, tag, 'mono', 'Optimization.csv')
+    if not os.path.exists(csv):
+        raise FileNotFoundError(f'{csv} não encontrado: rode antes a etapa model (ou table) desta instância.')
+    first = str(pd.read_csv(csv, nrows=0).columns[0])
+    if first.startswith('SCORE_') != (args.mode == 'multi'):
+        raise ValueError(f'{csv} foi gerado com outro --mode (1ª coluna {first}): use o --mode da otimização.')
+    test = LoadData(args.test_bearings)
+    seq = (data if args.test_warm else []) + test
+    role = {d[0]: 'otimização' for d in data}
+    role.update({d[0]: 'teste' for d in test})
+    tops = TopParams(csv, args.test_top)
+    os.makedirs(IMAGES, exist_ok=True)
+    print(f'\nEtapa test | otimização: {" -> ".join(d[0] for d in data)} | teste: {" -> ".join(d[0] for d in test)} | '
+          f'sequência simulada: {" -> ".join(d[0] for d in seq)} ({"com" if args.test_warm else "sem"} os rolamentos '
+          f'de otimização antes) | {len(tops)} conjunto(s) de parâmetros | {first} = erro de otimização')
+    rows = []
+    for pos, err, params, w in tops:
+        chosen = pos == 1
+
+        def on_end(t, name, i, chosen=chosen):   # gráficos apenas do modelo escolhido, nos rolamentos de teste
+            if chosen and role[name] == 'teste':
+                out = os.path.join(IMAGES, f'{tag}_test_{i}_{name}.png')
+                PlotSimulation(teda=t, mode='plt', out=out, xi=0, ftrs=5, dsi_mode='last3')
+                plt.close('all')
+
+        t0 = time.time()
+        _, rr = SimSeq(params, seq, state=args.state, mode_rul='interval' if chosen else 'single', rho=args.rho,
+                       intr_state=args.intr_state, eol=EOL, w=w, feedback=FEEDBACK, wtaG=WTAG, wtaP=WTAP, on_end=on_end)
+        for r, (nm, RS_b, HI_b) in zip(rr, seq):
+            refR, refH = RefTest(nm, RS_b, HI_b, params, w)
+            if not chosen: r.update(V_HI=np.nan, cov_HI=np.nan, sp_HI=np.nan)   # intervalos só no modelo escolhido
+            rows.append(dict(posicao=pos, erro_otimizacao=err, papel=role[nm], rolamento=nm,
+                             WAPE_RUL=r['WAPE_RUL'], REF_RUL=refR, WAPE_HI=r['WAPE_HI'], REF_HI=refH,
+                             V_HI=r['V_HI'], cov_HI=r['cov_HI'], sp_HI=r['sp_HI'], granulos=r['granulos'], passos=r['passos'],
+                             m=params[0], nI=params[1], nR=str(params[2]), nO=params[3], mO=params[4], N1=params[5],
+                             N2=params[6], N3=params[7], TAU=params[8], activation=params[9], w=w))
+        te = [x for x in rows if x['posicao'] == pos and x['papel'] == 'teste']
+        print(f'  #{pos} ({first} = {err:.4f}, {time.time() - t0:.0f} s) | teste: WAPE_RUL = '
+              f'{np.mean([x["WAPE_RUL"] for x in te]):.4f} (ref {np.mean([x["REF_RUL"] for x in te]):.4f}) | WAPE_HI = '
+              f'{np.mean([x["WAPE_HI"] for x in te]):.4f} (ref {np.mean([x["REF_HI"] for x in te]):.4f})')
+    df = pd.DataFrame(rows)
+    out_dir = os.path.join(FOLDER, tag, 'test')
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, f'Test_{"-".join(d[0] for d in test)}{"" if args.test_warm else "_frio"}.csv')
+    df.to_csv(out, index=False)
+
+    # Resumo: modelo escolhido, rolamento a rolamento; e média de teste de cada conjunto
+    pd.set_option('display.width', 200)
+    best = df[df['posicao'] == 1][['papel', 'rolamento', 'WAPE_RUL', 'REF_RUL', 'WAPE_HI', 'REF_HI', 'V_HI', 'granulos']]
+    print(f'\nModelo escolhido (#1), por rolamento (REF_* = referências nos mesmos passos):\n{best.round(4).to_string(index=False)}')
+    agg = (df[df['papel'] == 'teste'].groupby('posicao')
+           .agg(erro_otimizacao=('erro_otimizacao', 'first'), WAPE_RUL=('WAPE_RUL', 'mean'), REF_RUL=('REF_RUL', 'mean'),
+                WAPE_HI=('WAPE_HI', 'mean'), REF_HI=('REF_HI', 'mean')))
+    agg['RUL/ref'] = agg['WAPE_RUL'] / agg['REF_RUL']
+    agg['HI/ref'] = agg['WAPE_HI'] / agg['REF_HI']
+    print(f'\nMédia nos rolamentos de teste, por conjunto de parâmetros (ordem da otimização):\n{agg.round(4).to_string()}')
+    print(f'\nResultados: {out}')
+    return df
+
+
 if __name__ == '__main__':
     data = LoadData(args.bearings)
     print(f'{FileName}: stage={args.stage} | mode={args.mode} | agg={args.agg} | rolamentos={" -> ".join(d[0] for d in data)}\n'
@@ -428,3 +558,4 @@ if __name__ == '__main__':
     if args.stage in ('all', 'model'): StageModelPar(data) if args.par else StageModel(data)
     if args.stage == 'table': StageTable(data)
     if args.stage in ('all', 'plot'): StagePlot(data)
+    if args.stage == 'test': StageTest(data)

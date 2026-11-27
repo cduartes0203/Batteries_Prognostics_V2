@@ -58,7 +58,7 @@ import optuna
 from optuna.exceptions import TrialPruned
 from Functions.AutoCloud_V5 import AutoCloud, RefEoL
 from Functions.Utils import PrepareData, ParseParams
-from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler, ProcessStart
+from Functions.Utils_OPT_R2 import EarlyStoppingCallback, SelSampler, ProcessStart, ParetoFront
 
 __all__ = ['OptimizeSeq', 'SeqTable', 'ParetoTable', 'BestParams', 'BestParamsW', 'SimSeq',
            'OptimizeRho', 'RhoTable', 'BestRho', 'RhoReplay']
@@ -115,7 +115,7 @@ def _Sampler(mode, seed, n_workers=1):
     # SelSampler; com vários workers no mesmo estudo, o TPE usa constant_liar: os trials em execução nos outros
     # processos entram no modelo com um valor pessimista, o que evita que todos sugiram a mesma região ao mesmo tempo
     if n_workers > 1 and mode is not None and str(mode).lower() == 'tpe':
-        return optuna.samplers.TPESampler(multivariate=True, group=True, n_startup_trials=100, seed=seed,
+        return optuna.samplers.TPESampler(multivariate=True, group=True, n_startup_trials=1000, seed=seed,
                                           constant_liar=True)
     return SelSampler(mode=mode, seed=seed)
 
@@ -190,7 +190,7 @@ def _SharedBest(callback, n_workers):
     def cb(study, t):
         if n_workers <= 1: return
         if len(study.directions) > 1:                # mode='multi': menor soma dos objetivos na frente de Pareto
-            front = study.best_trials
+            front = ParetoFront(study)               # = study.best_trials, sem deepcopy de todos os trials (rápido)
             if not front: return
             best = min(front, key=_Score)
         else:
@@ -328,7 +328,7 @@ def OptimizeSeq(
         N3 = trial.suggest_int('N3', N3S[0], N3S[1])
         τ = trial.suggest_int('τ', τS[0], τS[1])
         act = trial.suggest_int('act', actS[0], actS[1])
-        mO = trial.suggest_int('mO', mOS[0], mOS[1])
+        mO = trial.suggest_int('mO', max(1, mOS[0]), min(mOS[1], nI)) 
         w_ = trial.suggest_int('w', wS[0], wS[1])          # janela do DSI (fixa quando wS = None)
         if mO > nI: raise TrialPruned()
         prev = _Lookup(seen_cur, trial, n_workers)
@@ -352,9 +352,9 @@ def OptimizeSeq(
                 teda.RUL_Prediction(Y[j],mode='single',lim=L)   # WAPE_RUL do passo
                 teda.Adapt(Y[j],Z[j])                            # WAPE_HI do passo e treino das RNNs
                 if not np.isfinite(teda.hiP[-1]): raise TrialPruned()
-                if OptPrune and j >= 30 and j%5 == 0:
+                if OptPrune and j >= 40 and j%8 == 0:
                     if teda.wape_RUL > 0.6 or teda.wape_HI > 0.3: raise TrialPruned()
-            if teda.wape_RUL > 0.25 or teda.wape_HI > 0.125: raise TrialPruned()
+            #if teda.wape_RUL > 0.25 or teda.wape_HI > 0.125: raise TrialPruned()
             wR, wH = float(teda.wape_RUL), float(teda.wape_HI)
             trial.set_user_attr(f'WAPE_RUL_{nm}', wR)
             trial.set_user_attr(f'WAPE_HI_{nm}', wH)
@@ -450,7 +450,8 @@ def _SeqRows(db_path, names_b, agg, mode, w):
             p = t.params
             nR_list = [p[f'nR_layer_{l}'] for l in range(p['n_layers'])]
             prm = [p['m'],p['nI'],str(nR_list),p['nO'],p['mO'],p['N1'],p['N2'],p['N3'],p['τ'],p['act'],p.get('w', w)]
-            rows.append([_Score(t)] + prm + (list(t.values) if multi else [])
+            # 1ª coluna: multi -> SCORE_<agg> = F_RUL = agg_b(WAPE_RUL_b) (1º objetivo); single -> o objetivo
+            rows.append([float(t.values[0]) if multi else _Score(t)] + prm + (list(t.values) if multi else [])
                         + [t.user_attrs.get(c, np.nan) for c in seg_cols] + [p['n_layers']])
     if not rows: return None
     df = pd.DataFrame(rows, columns=[obj_name] + _PRM_NAMES + obj_cols + seg_cols + ['_nL'])
@@ -472,9 +473,11 @@ def SeqTable(db_path, names_b, agg='mean', n_best=10, out_path=None, w=1, mode='
         out_path: caminho do .csv; None = <pasta do banco>/mono/Optimization.csv.
         w       : valor da coluna w para trials sem o parâmetro 'w' (bancos da V4_7 ou anteriores).
         mode    : 'single' (estudos seq<agg>_) ou 'multi' (estudos mseq<agg>_ de OptimizeSeq(mode='multi')).
-    Colunas gravadas: objetivo (WAPE_<agg>; multi: SCORE_<agg> = F_RUL + F_HI, o menor valor está na frente de Pareto),
-    os parâmetros, w e, para cada rolamento na ordem da sequência, WAPE_RUL_<b> e WAPE_HI_<b> sem normalização, finais
+    Colunas gravadas: objetivo (WAPE_<agg>; multi: SCORE_<agg> = F_RUL = agg_b(WAPE_RUL_b), média (ou soma) do WAPE_RUL
+    final dos rolamentos, o menor valor está na frente de Pareto; a otimização continua minimizando F_RUL e F_HI),
+    os parâmetros, w, WAPE_RUL_<b> de todos os rolamentos e depois WAPE_HI_<b> de todos (na ordem da sequência), finais e sem normalização
     (último passo do rolamento enviado ao modelo, no EoL). A 1ª coluna é usada por BestParams/BestParamsW.
+    Valores não inteiros gravados com 3 casas decimais (o m arredondado é recuperado por _Parse10).
     Linhas: n_best menores valores da 1ª coluna por nº de camadas; em 'multi', também todos os pontos da frente de
     Pareto (os objetivos e a marcação da frente ficam em ParetoTable, não no .csv).
     '''
@@ -487,7 +490,8 @@ def SeqTable(db_path, names_b, agg='mean', n_best=10, out_path=None, w=1, mode='
         out_path = os.path.join(os.path.dirname(db_path), 'mono', 'Optimization.csv')
     obj_name = f'SCORE_{agg}' if multi else f'WAPE_{agg}'
     obj_cols = [f'OBJ_RUL_{agg}', f'OBJ_HI_{agg}']
-    cols = [obj_name] + _PRM_NAMES + [c for nm in names_b for c in (f'WAPE_RUL_{nm}', f'WAPE_HI_{nm}')]
+    # WAPE_RUL de todos os rolamentos lado a lado, depois os WAPE_HI (ordem da sequência)
+    cols = [obj_name] + _PRM_NAMES + [f'WAPE_RUL_{nm}' for nm in names_b] + [f'WAPE_HI_{nm}' for nm in names_b]
 
     df_all = _SeqRows(db_path, names_b, agg, mode, w)
     if df_all is None:
@@ -510,16 +514,16 @@ def SeqTable(db_path, names_b, agg='mean', n_best=10, out_path=None, w=1, mode='
     for nL_, grp in df_stdy.groupby('_nL'):
         print(f'  nL={nL_}: {len(grp)} linhas | melhor {grp[obj_name].min():.4f} | pior mantido {grp[obj_name].max():.4f}')
 
-    df_stdy = df_stdy[cols].reset_index(drop=True)
-    df_stdy.to_csv(out_path, index=False)
+    df_stdy = df_stdy[cols].reset_index(drop=True).round(3)   # valores não inteiros com 3 casas decimais
+    df_stdy.to_csv(out_path, index=False, float_format='%.3f')
     return df_stdy
 
 
 def ParetoTable(db_path, names_b, agg='mean', w=1):
     '''
     mode='multi': todos os trials concluídos dos estudos mseq<agg>_ (uma linha por combinação de parâmetros), com
-    SCORE_<agg>, parâmetros, w, OBJ_RUL_<agg> (F_RUL), OBJ_HI_<agg> (F_HI), WAPE de cada rolamento, nL e pareto
-    (1 = não dominado). Ordenada por SCORE (1ª linha = modelo escolhido). Não grava arquivo (gráfico da frente).
+    SCORE_<agg> (= F_RUL), parâmetros, w, OBJ_RUL_<agg> (F_RUL), OBJ_HI_<agg> (F_HI), WAPE de cada rolamento, nL e pareto
+    (1 = não dominado). Ordenada por SCORE (1ª linha = modelo escolhido, menor F_RUL). Não grava arquivo (gráfico da frente).
     '''
     if not os.path.exists(db_path): raise FileNotFoundError(f'{db_path} não encontrado.')
     df = _SeqRows(db_path, names_b, agg, 'multi', w)
@@ -534,10 +538,21 @@ def BestParams(csv_path):
     return _Parse10(dfP.sort_values(dfP.columns[0], ascending=True).iloc[0, 1:].values)
 
 
+def _SnapM(m, step=0.0125, tol=6e-4):
+    # O Optimization.csv grava m com 3 casas decimais (ex.: 1.9125 -> 1.912). Os m sugeridos estão na grade do passo
+    # (0.0125 em OptimizeSeq; 0.25 em Optimize, múltiplo de 0.0125): o valor a até tol de um ponto da grade volta a esse
+    # ponto, para simular o mesmo modelo do trial. Valores fora da grade (ex.: 1.93 digitado) não são alterados.
+    m = float(m)
+    g = round(round(m / step) * step, 6)
+    return g if abs(m - g) <= tol else m
+
+
 def _Parse10(vals10, w=1):
     # Utils.ParseParams passou a exigir 11 itens [..., act, w]: completa com w e devolve os 10 primeiros
-    # (formato [m, nI, nR, nO, mO, N1, N2, N3, τ, act] usado por SimSeq)
-    return ParseParams(list(vals10) + [w])[:10]
+    # (formato [m, nI, nR, nO, mO, N1, N2, N3, τ, act] usado por SimSeq); m volta à grade do passo (_SnapM)
+    v = list(vals10)
+    v[0] = _SnapM(v[0])
+    return ParseParams(v + [w])[:10]
 
 
 def BestParamsW(csv_path, w=1):
